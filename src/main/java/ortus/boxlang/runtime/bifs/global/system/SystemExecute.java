@@ -26,7 +26,6 @@ import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -40,12 +39,19 @@ import ortus.boxlang.runtime.scopes.ArgumentsScope;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Argument;
 import ortus.boxlang.runtime.types.Array;
+import ortus.boxlang.runtime.types.IStruct;
 import ortus.boxlang.runtime.types.Struct;
 import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
 
 @BoxBIF( description = "Execute a system command" )
 
 public class SystemExecute extends BIF {
+
+	/**
+	 * Grace period in milliseconds to wait for stream reader threads to finish
+	 * after the process exits. Handles cases where child processes keep pipes open.
+	 */
+	private static final long STREAM_DRAIN_GRACE_MS = 5000;
 
 	/**
 	 * Constructor
@@ -61,6 +67,8 @@ public class SystemExecute extends BIF {
 		    new Argument( false, "string", Key.directory ),
 		    new Argument( false, "string", Key.output ),
 		    new Argument( false, "string", Key.error ),
+		    new Argument( false, "boolean", Key.inheritEnvironment, true ),
+		    new Argument( false, "struct", Key.environment, new Struct() ),
 		};
 	}
 
@@ -91,6 +99,10 @@ public class SystemExecute extends BIF {
 	 * @argument.ouptut An optional file path to write the command output to
 	 *
 	 * @argument.error An optional file path to write errors to
+	 *
+	 * @argument.inheritEnvironment Whether to inherit the parent process environment variables. Defaults to true.
+	 *
+	 * @argument.environment A struct of environment variables to pass to the process. Merged in after the inherit decision.
 	 */
 	public Object _invoke( IBoxContext context, ArgumentsScope arguments ) {
 		String				bin					= arguments.getAsString( Key.of( "name" ) );
@@ -100,6 +112,8 @@ public class SystemExecute extends BIF {
 		Boolean				terminateOnTimeout	= arguments.getAsBoolean( Key.terminateOnTimeout );
 		String				outputTarget		= arguments.getAsString( Key.output );
 		String				errorTarget			= arguments.getAsString( Key.error );
+		Boolean				inheritEnvironment	= arguments.getAsBoolean( Key.inheritEnvironment );
+		IStruct				environment			= arguments.getAsStruct( Key.environment );
 
 		ArrayList<String>	cmd					= new ArrayList<String>( 1 );
 		Struct				response			= new Struct( new HashMap<Key, Object>() {
@@ -142,6 +156,16 @@ public class SystemExecute extends BIF {
 
 		ProcessBuilder processBuilder = new ProcessBuilder( cmd );
 
+		// If inheritEnvironment is false, start with a clean slate; otherwise keep the JVM's inherited env.
+		if ( !Boolean.TRUE.equals( inheritEnvironment ) ) {
+			processBuilder.environment().clear();
+		}
+
+		// Merge any caller-supplied environment variables on top (works regardless of inherit flag).
+		if ( environment != null && !environment.isEmpty() ) {
+			environment.entrySet().forEach( entry -> processBuilder.environment().put( entry.getKey().getName(), StringCaster.cast( entry.getValue() ) ) );
+		}
+
 		if ( directory != null ) {
 			processBuilder.directory( Path.of( directory ).toFile() );
 		}
@@ -153,36 +177,89 @@ public class SystemExecute extends BIF {
 			processBuilder.redirectError( Path.of( errorTarget ).toFile() );
 		}
 
-		Process process = null;
+		Process	process		= null;
+		Integer	exitCode	= null;
 
 		try {
 			process = processBuilder.start();
 			response.put( Key.pid, process.pid() );
-			if ( timeout != null && timeout != 0l ) {
-				process.waitFor( timeout, TimeUnit.SECONDS );
-				response.put( Key.timeout, true );
-				if ( terminateOnTimeout && process.isAlive() ) {
-					process.destroy();
-					response.put( Key.terminated, true );
-				}
-			} else {
-				process.waitFor();
+
+			// Close stdin since we are not writing to the process
+			process.getOutputStream().close();
+
+			// Start draining stdout and stderr concurrently in background threads.
+			// Reading both streams in parallel prevents buffer deadlocks (where one
+			// full buffer blocks the process while we're stuck reading the other).
+			// It also prevents hangs when child processes inherit the pipe file
+			// descriptors and keep them open after the main process exits.
+			final Process	finalProcess	= process;
+			StringBuilder	stdoutBuilder	= new StringBuilder();
+			StringBuilder	stderrBuilder	= new StringBuilder();
+			Thread			stdoutThread	= null;
+			Thread			stderrThread	= null;
+
+			if ( outputTarget == null ) {
+				stdoutThread = new Thread( () -> drainStream( finalProcess.inputReader(), stdoutBuilder ), "SystemExecute-stdout" );
+				stdoutThread.setDaemon( true );
+				stdoutThread.start();
 			}
 
+			if ( errorTarget == null ) {
+				stderrThread = new Thread( () -> drainStream( finalProcess.errorReader(), stderrBuilder ), "SystemExecute-stderr" );
+				stderrThread.setDaemon( true );
+				stderrThread.start();
+			}
+
+			// Wait for the process to complete
+			if ( timeout != null && timeout != 0L ) {
+				boolean finished = process.waitFor( timeout, TimeUnit.SECONDS );
+				response.put( Key.timeout, !finished );
+
+				if ( finished ) {
+					exitCode = process.exitValue();
+				} else if ( terminateOnTimeout && process.isAlive() ) {
+					// "destroy()" is polite; may not stop the process quickly.
+					process.destroy();
+
+					// Optional: wait a short grace period, then force kill if still alive
+					if ( !process.waitFor( 2, TimeUnit.SECONDS ) && process.isAlive() ) {
+						process.destroyForcibly();
+						process.waitFor(); // wait until it actually exits
+					}
+
+					response.put( Key.terminated, true );
+
+					// Now that it exited, you can capture its exit code
+					exitCode = process.exitValue();
+				}
+			} else {
+				exitCode = process.waitFor(); // this returns int exit code
+				response.put( Key.timeout, false );
+			}
+
+			// After the process exits, wait for stream reader threads to finish.
+			// If child processes keep the pipes open, force-close the streams after a grace period.
+			joinStreamThread( stdoutThread, finalProcess.getInputStream() );
+			joinStreamThread( stderrThread, finalProcess.getErrorStream() );
+
 			if ( !response.getAsBoolean( Key.terminated ) ) {
-				if ( process != null && outputTarget == null && process.getInputStream() != null ) {
-					response.put( Key.output, process.inputReader().lines().collect( Collectors.joining( "\n" ) ) );
+				if ( outputTarget == null ) {
+					response.put( Key.output, stdoutBuilder.toString() );
 				}
-				if ( process != null && errorTarget == null && process.getErrorStream() != null ) {
-					response.put( Key.error, process.errorReader().lines().collect( Collectors.joining( "\n" ) ) );
+				if ( errorTarget == null ) {
+					response.put( Key.error, stderrBuilder.toString() );
 				}
+			}
+
+			if ( exitCode != null ) {
+				response.put( Key.exitCode, exitCode );
 			}
 
 			return response;
 
 		} catch ( IOException e ) {
 			throw new BoxRuntimeException(
-			    String.format( "An exception occurred while attempting to execute the statement [%s]", StringUtils.join( cmd, " " ) ),
+			    String.format( "An exception occurred while attempting to execute the command [%s]", StringUtils.join( cmd, " " ) ),
 			    e
 			);
 		} catch ( InterruptedException ie ) {
@@ -193,6 +270,54 @@ public class SystemExecute extends BIF {
 			);
 		}
 
+	}
+
+	/**
+	 * Drains a BufferedReader line-by-line into a StringBuilder.
+	 * Designed to be run in a background thread to prevent blocking the main thread.
+	 *
+	 * @param reader  The reader to drain
+	 * @param builder The StringBuilder to append lines to
+	 */
+	private void drainStream( java.io.BufferedReader reader, StringBuilder builder ) {
+		try {
+			String line;
+			while ( ( line = reader.readLine() ) != null ) {
+				if ( builder.length() > 0 ) {
+					builder.append( "\n" );
+				}
+				builder.append( line );
+			}
+		} catch ( IOException e ) {
+			// Stream was closed or errored - stop reading silently.
+			// This is expected when we force-close the stream after the grace period.
+		}
+	}
+
+	/**
+	 * Waits for a stream-reader thread to finish within a grace period.
+	 * If it doesn't finish in time (e.g. child processes keep the pipe open),
+	 * force-closes the underlying stream to unblock the reader.
+	 *
+	 * @param thread The stream reader thread (may be null)
+	 * @param stream The underlying input stream to force-close if needed (may be null)
+	 */
+	private void joinStreamThread( Thread thread, java.io.InputStream stream ) {
+		if ( thread == null ) {
+			return;
+		}
+		try {
+			thread.join( STREAM_DRAIN_GRACE_MS );
+			if ( thread.isAlive() && stream != null ) {
+				// Force-close the stream to unblock the reader thread
+				stream.close();
+				thread.join( 1000 );
+			}
+		} catch ( InterruptedException e ) {
+			Thread.currentThread().interrupt();
+		} catch ( IOException e ) {
+			// Ignore close errors
+		}
 	}
 
 }

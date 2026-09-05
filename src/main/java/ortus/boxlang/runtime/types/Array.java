@@ -29,7 +29,6 @@ import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -38,14 +37,13 @@ import org.apache.commons.lang3.Strings;
 import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.bifs.BoxMemberExpose;
 import ortus.boxlang.runtime.bifs.MemberDescriptor;
+import ortus.boxlang.runtime.bifs.global.array.ArrayUnique;
 import ortus.boxlang.runtime.context.IBoxContext;
 import ortus.boxlang.runtime.dynamic.IReferenceable;
 import ortus.boxlang.runtime.dynamic.casters.BooleanCaster;
 import ortus.boxlang.runtime.dynamic.casters.CastAttempt;
 import ortus.boxlang.runtime.dynamic.casters.NumberCaster;
-import ortus.boxlang.runtime.dynamic.casters.StringCaster;
 import ortus.boxlang.runtime.interop.DynamicInteropService;
-import ortus.boxlang.runtime.operators.Compare;
 import ortus.boxlang.runtime.operators.EqualsEquals;
 import ortus.boxlang.runtime.scopes.IntKey;
 import ortus.boxlang.runtime.scopes.Key;
@@ -54,6 +52,7 @@ import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
 import ortus.boxlang.runtime.types.meta.BoxMeta;
 import ortus.boxlang.runtime.types.meta.GenericMeta;
 import ortus.boxlang.runtime.types.meta.IChangeListener;
+import ortus.boxlang.runtime.types.meta.IIndexedChangeListener;
 import ortus.boxlang.runtime.types.meta.IListenable;
 import ortus.boxlang.runtime.types.unmodifiable.UnmodifiableArray;
 import ortus.boxlang.runtime.types.util.TypeUtil;
@@ -71,7 +70,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * Public Properties
 	 * --------------------------------------------------------------------------
 	 */
-	public static final Array							EMPTY				= new UnmodifiableArray();
+	public static final Array							EMPTY	= new UnmodifiableArray();
 
 	/**
 	 * --------------------------------------------------------------------------
@@ -85,6 +84,11 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	protected final List<Object>						wrapped;
 
 	/**
+	 * Whether this array is synchronized (thread-safe)
+	 */
+	private final boolean								isSynchronized;
+
+	/**
 	 * Metadata object
 	 */
 	public transient BoxMeta<?>							$bx;
@@ -95,14 +99,36 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	private transient Map<Key, IChangeListener<Array>>	listeners;
 
 	/**
-	 * Function service
+	 * Function service, resolved lazily so Array can be loaded
+	 * before the runtime's FunctionService is fully wired during startup.
 	 */
-	private static FunctionService						functionService		= BoxRuntime.getInstance().getFunctionService();
+	private static FunctionService						functionService;
+
+	/**
+	 * Gets the FunctionService, resolving it lazily on first use.
+	 *
+	 * @return The FunctionService.
+	 */
+	private static FunctionService getFunctionService() {
+		if ( functionService == null ) {
+			synchronized ( Array.class ) {
+				if ( functionService == null ) {
+					functionService = BoxRuntime.getInstance().getFunctionService();
+				}
+			}
+		}
+		return functionService;
+	}
 
 	/**
 	 * Serialization ID
 	 */
-	private static final long							serialVersionUID	= 1L;
+	private static final long	serialVersionUID	= 1L;
+
+	/**
+	 * Dimension
+	 */
+	public int					dimensions			= 1;
 
 	/**
 	 * --------------------------------------------------------------------------
@@ -111,19 +137,56 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 */
 
 	/**
-	 * Constructor to create default array
+	 * Constructor to create default array (synchronized)
 	 */
 	public Array() {
 		this( 10 );
 	}
 
 	/**
-	 * Constructor to create array with an initial capacity
+	 * Constructor to create array with synchronization control
+	 *
+	 * @param isSynchronized Whether the array should be thread-safe (synchronized)
+	 * @param dimensions     The number of dimensions for the array
+	 */
+	public Array( boolean isSynchronized, int dimensions ) {
+		this( 10, isSynchronized, dimensions );
+	}
+
+	/**
+	 * Constructor to create array with an initial capacity (synchronized by default)
 	 *
 	 * @param initialCapactity The initialCapactity of Array to create
 	 */
 	public Array( int initialCapactity ) {
-		this.wrapped = Collections.synchronizedList( new ArrayList<Object>( initialCapactity ) );
+		this( initialCapactity, true );
+	}
+
+	/**
+	 * Constructor to create array with an initial capacity and synchronization control
+	 *
+	 * @param initialCapactity The initial capacity of Array to create
+	 * @param isSynchronized   Whether the array should be thread-safe (synchronized)
+	 */
+	public Array( int initialCapactity, boolean isSynchronized ) {
+		this( initialCapactity, isSynchronized, 1 );
+	}
+
+	/**
+	 * Constructor to create array with an initial capacity and synchronization control
+	 *
+	 * @param initialCapactity The initial capacity of Array to create
+	 * @param isSynchronized   Whether the array should be thread-safe (synchronized)
+	 * @param dimensions       The number of dimensions for the array
+	 */
+	public Array( int initialCapactity, boolean isSynchronized, int dimensions ) {
+		this.isSynchronized	= isSynchronized;
+		this.dimensions		= dimensions;
+		if ( isSynchronized ) {
+			this.wrapped = Collections.synchronizedList( new ArrayList<Object>( initialCapactity ) );
+		} else {
+			this.wrapped = new ArrayList<Object>( initialCapactity );
+		}
 	}
 
 	/**
@@ -133,7 +196,8 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @param arr The array to create the Array from
 	 */
 	public Array( Object[] arr ) {
-		this.wrapped = Collections.synchronizedList( new ArrayList<Object>( Arrays.asList( arr ) ) );
+		this.isSynchronized	= true;
+		this.wrapped		= Collections.synchronizedList( new ArrayList<Object>( Arrays.asList( arr ) ) );
 	}
 
 	/**
@@ -143,7 +207,8 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 */
 	@SuppressWarnings( "unchecked" )
 	public Array( List<? extends Object> list ) {
-		this.wrapped = ( List<Object> ) list;
+		this.isSynchronized	= list.getClass().getName().contains( "SynchronizedList" );
+		this.wrapped		= ( List<Object> ) list;
 	}
 
 	/**
@@ -246,6 +311,15 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	}
 
 	/**
+	 * Check if this array is synchronized (thread-safe).
+	 *
+	 * @return true if the array is synchronized, false otherwise
+	 */
+	public boolean isSynchronized() {
+		return this.isSynchronized;
+	}
+
+	/**
 	 * --------------------------------------------------------------------------
 	 * List Interface Methods
 	 * --------------------------------------------------------------------------
@@ -268,7 +342,21 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 
 	@Override
 	public Iterator<Object> iterator() {
-		return wrapped.iterator();
+		return new Iterator<Object>() {
+
+			private final int	max		= wrapped.size();
+			private int			index	= 0;
+
+			@Override
+			public boolean hasNext() {
+				return index < max && index < wrapped.size();
+			}
+
+			@Override
+			public Object next() {
+				return wrapped.get( index++ );
+			}
+		};
 	}
 
 	@Override
@@ -297,14 +385,14 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	@Override
 	public boolean add( Object e ) {
 		synchronized ( wrapped ) {
-			return wrapped.add( notifyListeners( wrapped.size(), e ) );
+			return wrapped.add( notifyListeners( wrapped.size(), e, true ) );
 		}
 	}
 
 	@Override
 	public void add( int index, Object element ) {
 		synchronized ( wrapped ) {
-			wrapped.add( index, notifyListeners( index, element ) );
+			wrapped.add( index, notifyListeners( index, element, true ) );
 		}
 	}
 
@@ -350,6 +438,13 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 		// TODO: deal with listeners
 		synchronized ( wrapped ) {
 			return wrapped.removeAll( c );
+		}
+	}
+
+	@Override
+	public boolean removeIf( java.util.function.Predicate<? super Object> filter ) {
+		synchronized ( wrapped ) {
+			return wrapped.removeIf( filter );
 		}
 	}
 
@@ -413,7 +508,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	public Object set( int index, Object element ) {
 		return wrapped.set(
 		    index,
-		    notifyListeners( index, element )
+		    notifyListeners( index, element, false )
 		);
 	}
 
@@ -646,9 +741,6 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @return The array
 	 */
 	public Array insertAt( int index, Object element ) {
-		if ( index < 1 || index > wrapped.size() ) {
-			throw new BoxRuntimeException( "Index [" + index + "] out of bounds for list with " + wrapped.size() + " elements." );
-		}
 		add( index - 1, element );
 		return this;
 	}
@@ -708,7 +800,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 		}
 		synchronized ( wrapped ) {
 			remove( index - 1 );
-			notifyListeners( index - 1, null );
+			notifyListeners( index - 1, null, false );
 		}
 		return this;
 	}
@@ -722,18 +814,15 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @return The one-based index value or zero if not found
 	 */
 	public int findIndexWithSubstring( Object value, Boolean caseSensitive ) {
-		return intStream()
-		    .filter(
-		        i -> ( ( !caseSensitive
-		            &&
-		            Strings.CI.containsAny( get( i ).toString(), value.toString() ) )
-		            ||
-		            ( caseSensitive
-		                &&
-		                get( i ).toString().contains( value.toString() ) ) )
-		    )
-		    .findFirst()
-		    .orElse( -1 ) + 1;
+		String	valueStr	= value.toString();
+		int		len			= size();
+		for ( int i = 0; i < len; i++ ) {
+			String elemStr = get( i ).toString();
+			if ( caseSensitive ? elemStr.contains( valueStr ) : Strings.CI.containsAny( elemStr, valueStr ) ) {
+				return i + 1;
+			}
+		}
+		return 0;
 	}
 
 	/**
@@ -745,12 +834,14 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @return The one-based index value or zero if not found
 	 */
 	public int findIndex( Object value, Boolean caseSensitive ) {
-		return intStream()
-		    .filter(
-		        i -> EqualsEquals.invoke( get( i ), value, caseSensitive ) || get( i ).equals( value )
-		    )
-		    .findFirst()
-		    .orElse( -1 ) + 1;
+		int len = size();
+		for ( int i = 0; i < len; i++ ) {
+			Object elem = get( i );
+			if ( EqualsEquals.invoke( elem, value, caseSensitive ) || elem.equals( value ) ) {
+				return i + 1;
+			}
+		}
+		return 0;
 	}
 
 	/**
@@ -773,16 +864,19 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @return The one-based index value or zero if not found
 	 */
 	public int findIndex( Function test, IBoxContext context ) {
-		return intStream()
-		    .filter( i -> BooleanCaster.cast(
-		        test.requiresStrictArguments()
-		            // Java Lambdas
-		            ? context.invokeFunction( test, new Object[] { get( i ) } )
-		            // BoxLang Functions, more args!!=
-		            : context.invokeFunction( test, new Object[] { get( i ), i, this } )
-		    ) )
-		    .findFirst()
-		    .orElse( -1 ) + 1;
+		boolean	strictArgs	= test.requiresStrictArguments();
+		int		len			= size();
+		for ( int i = 0; i < len; i++ ) {
+			Object result = strictArgs
+			    // Java Lambdas
+			    ? context.invokeFunction( test, new Object[] { get( i ) } )
+			    // BoxLang Functions, more args
+			    : context.invokeFunction( test, new Object[] { get( i ), i, this } );
+			if ( BooleanCaster.cast( result ) ) {
+				return i + 1;
+			}
+		}
+		return 0;
 	}
 
 	/**
@@ -802,17 +896,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 * @return The new array
 	 */
 	public Array removeDuplicates( Boolean caseSensitive ) {
-		Array	ref			= this;
-		Array	distinct	= new Array( ref.stream()
-		    .collect( Collectors.groupingBy( item -> caseSensitive ? item : Key.of( item ), Collectors.counting() ) )
-		    .keySet()
-		    .stream()
-		    .map( item -> StringCaster.cast( item ) )
-		    .toArray()
-		);
-		// Our collector HashMap didn't maintain order so we need to restore it
-		distinct.sort( ( a, b ) -> Compare.invoke( ref.findIndex( a ), ref.findIndex( b ) ) );
-		return distinct;
+		return ArrayUnique.invoke( this, caseSensitive );
 	}
 
 	/**
@@ -831,8 +915,9 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	/**
 	 * Assign a value to a key
 	 *
-	 * @param key   The key to assign
-	 * @param value The value to assign
+	 * @param context The context in which the assignment is being performed
+	 * @param key     The key to assign
+	 * @param value   The value to assign
 	 *
 	 * @return The assigned value
 	 */
@@ -844,7 +929,12 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 			synchronized ( wrapped ) {
 				// If the index is larger than the array, pad the array with nulls
 				for ( int i = wrapped.size(); i < index; i++ ) {
-					wrapped.add( null );
+					if ( dimensions > 1 ) {
+						// If this is a multi-dimensional array, seed empty nested arrays in place of nulls
+						wrapped.add( new Array( isSynchronized, dimensions - 1 ) );
+					} else {
+						wrapped.add( null );
+					}
 				}
 			}
 		}
@@ -868,14 +958,28 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 			return getBoxMeta();
 		}
 
-		Integer index = Array.validateAndGetIntForDereference( key, wrapped.size(), safe );
+		Integer index = Array.validateAndGetIntForDereference( key, wrapped.size(), safe || dimensions > 1 );
+
+		// If this is access to a non-existant index on a multi-dimensional array, seed an empty nested array in place
+		if ( dimensions > 1 && index != null && index > 0 && index > wrapped.size() ) {
+			var newVal = new Array( isSynchronized, dimensions - 1 );
+			assign( context, key, newVal );
+			return newVal;
+		}
+
 		// non-existant indexes or keys which could not be turned into an int return null when dereferencing safely
 		if ( safe && ( index == null || Math.abs( index ) > wrapped.size() || index == 0 ) ) {
 			return null;
 		}
+
 		if ( index < 0 ) {
 			return wrapped.get( wrapped.size() + index );
 		}
+
+		if ( index == 0 ) {
+			throw new BoxRuntimeException( "Arrays cannot be accessed by an index of 0." );
+		}
+
 		return wrapped.get( index - 1 );
 	}
 
@@ -891,7 +995,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 */
 	public Object dereferenceAndInvoke( IBoxContext context, Key name, Object[] positionalArguments, Boolean safe ) {
 
-		MemberDescriptor memberDescriptor = functionService.getMemberMethod( name, BoxLangType.ARRAY );
+		MemberDescriptor memberDescriptor = getFunctionService().getMemberMethod( name, BoxLangType.ARRAY );
 		if ( memberDescriptor != null ) {
 			return memberDescriptor.invoke( context, this, positionalArguments );
 		}
@@ -911,7 +1015,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	 */
 	public Object dereferenceAndInvoke( IBoxContext context, Key name, Map<Key, Object> namedArguments, Boolean safe ) {
 
-		MemberDescriptor memberDescriptor = functionService.getMemberMethod( name, BoxLangType.ARRAY );
+		MemberDescriptor memberDescriptor = getFunctionService().getMemberMethod( name, BoxLangType.ARRAY );
 		if ( memberDescriptor != null ) {
 			return memberDescriptor.invoke( context, this, namedArguments );
 		}
@@ -949,12 +1053,13 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 	/**
 	 * Notify listeners of a change
 	 *
-	 * @param i     The index of the change
-	 * @param value The value of the change
+	 * @param i        The index of the change
+	 * @param value    The value of the change
+	 * @param isInsert Whether this is an insert (true) or a set/replace (false)
 	 *
 	 * @return The value after notifying listeners
 	 */
-	private Object notifyListeners( int i, Object value ) {
+	private Object notifyListeners( int i, Object value, boolean isInsert ) {
 		if ( listeners == null ) {
 			return value;
 		}
@@ -966,7 +1071,11 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 		if ( listener == null ) {
 			return value;
 		}
-		return listener.notify( key, value, i < wrapped.size() ? wrapped.get( i ) : null, this );
+		Object oldValue = i < wrapped.size() ? wrapped.get( i ) : null;
+		if ( listener instanceof IIndexedChangeListener<Array> indexedListener ) {
+			return indexedListener.notify( key, value, oldValue, this, isInsert );
+		}
+		return listener.notify( key, value, oldValue, this );
 	}
 
 	/**
@@ -1000,9 +1109,7 @@ public class Array implements List<Object>, IType, IReferenceable, IListenable<A
 		// negative indexes are allowed, and offset from the right had side of the array
 
 		if ( index == 0 ) {
-			throw new BoxRuntimeException( String.format(
-			    "Arrays cannot be accessed by an index of 0.", index, size
-			) );
+			throw new BoxRuntimeException( "Arrays cannot be accessed by an index of 0." );
 		}
 
 		// Disallow out of bounds indexes foo[5] or foo[-5]

@@ -21,14 +21,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
-import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -38,10 +34,12 @@ import ortus.boxlang.compiler.asmboxpiler.Transpiler;
 import ortus.boxlang.compiler.asmboxpiler.transformer.AbstractTransformer;
 import ortus.boxlang.compiler.asmboxpiler.transformer.ReturnValueContext;
 import ortus.boxlang.compiler.asmboxpiler.transformer.TransformerContext;
-import ortus.boxlang.compiler.ast.BoxExpression;
 import ortus.boxlang.compiler.ast.BoxNode;
+import ortus.boxlang.compiler.ast.expression.BoxArgument;
 import ortus.boxlang.compiler.ast.expression.BoxFunctionalMemberAccess;
+import ortus.boxlang.compiler.ast.expression.BoxSpreadExpression;
 import ortus.boxlang.runtime.context.IBoxContext;
+import ortus.boxlang.runtime.dynamic.LiteralSpreadUtil;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.FunctionalMemberAccess;
 import ortus.boxlang.runtime.types.FunctionalMemberAccessArgs;
@@ -79,9 +77,7 @@ public class BoxFunctionalMemberAccessTransformer extends AbstractTransformer {
 
 		nodes.addAll( transpiler.getCurrentMethodContextTracker().get().loadCurrentContext() );
 
-		boolean usesNamedArguments = memberAccess.getArguments().get( 0 ).getName() != null;
-
-		if ( usesNamedArguments ) {
+		if ( memberAccess.isNamedArgs() ) {
 			nodes.addAll( generateNamedArgumentLambda( memberAccess ) );
 			nodes.add( new InsnNode( Opcodes.ACONST_NULL ) );
 		} else {
@@ -106,19 +102,27 @@ public class BoxFunctionalMemberAccessTransformer extends AbstractTransformer {
 	}
 
 	private List<AbstractInsnNode> generateNamedArgumentLambda( BoxFunctionalMemberAccess memberAccess ) {
-		return generateArgumentProducerLambda( memberAccess, () -> {
+		return AsmHelper.generateArgumentProducerLambda( transpiler, () -> {
 			List<AbstractInsnNode>			nodes		= new ArrayList<>();
 
-			List<List<AbstractInsnNode>>	argNodes	= memberAccess.getArguments().stream()
-			    .map( arg -> {
-
-															    return List.of(
-															        transpiler.createKey( arg.getName() ),
-															        transpiler.transform( arg, TransformerContext.NONE, ReturnValueContext.VALUE )
-															    );
-														    } )
-			    .flatMap( l -> l.stream() )
-			    .collect( Collectors.toList() );
+			List<List<AbstractInsnNode>>	argNodes	= new ArrayList<>();
+			for ( BoxArgument arg : memberAccess.getArguments() ) {
+				if ( arg.isSpread() ) {
+					BoxSpreadExpression		spread		= ( BoxSpreadExpression ) arg.getValue();
+					List<AbstractInsnNode>	spreadNodes	= new ArrayList<>(
+					    transpiler.transform( spread.getExpression(), TransformerContext.NONE, ReturnValueContext.VALUE ) );
+					spreadNodes.add(
+					    new MethodInsnNode( Opcodes.INVOKESTATIC,
+					        Type.getInternalName( LiteralSpreadUtil.class ),
+					        "spread",
+					        Type.getMethodDescriptor( Type.getType( LiteralSpreadUtil.SpreadValue.class ), Type.getType( Object.class ) ),
+					        false ) );
+					argNodes.add( spreadNodes );
+				} else {
+					argNodes.add( transpiler.createKey( arg.getName() ) );
+					argNodes.add( transpiler.transform( arg, TransformerContext.NONE, ReturnValueContext.VALUE ) );
+				}
+			}
 
 			nodes.addAll( AsmHelper.array( Type.getType( Object.class ), argNodes ) );
 
@@ -135,74 +139,35 @@ public class BoxFunctionalMemberAccessTransformer extends AbstractTransformer {
 	}
 
 	private List<AbstractInsnNode> generatePositionalArgumentLambda( BoxFunctionalMemberAccess memberAccess ) {
-		return generateArgumentProducerLambda( memberAccess, () -> {
+		return AsmHelper.generateArgumentProducerLambda( transpiler, () -> {
+			if ( memberAccess.hasSpread() ) {
+				List<List<AbstractInsnNode>> elements = new ArrayList<>();
+				for ( BoxArgument arg : memberAccess.getArguments() ) {
+					if ( arg.isSpread() ) {
+						BoxSpreadExpression		spread		= ( BoxSpreadExpression ) arg.getValue();
+						List<AbstractInsnNode>	spreadNodes	= new ArrayList<>(
+						    transpiler.transform( spread.getExpression(), TransformerContext.NONE, ReturnValueContext.VALUE ) );
+						spreadNodes.add(
+						    new MethodInsnNode( Opcodes.INVOKESTATIC,
+						        Type.getInternalName( LiteralSpreadUtil.class ),
+						        "spread",
+						        Type.getMethodDescriptor( Type.getType( LiteralSpreadUtil.SpreadValue.class ), Type.getType( Object.class ) ),
+						        false ) );
+						elements.add( spreadNodes );
+					} else {
+						elements.add( transpiler.transform( arg, TransformerContext.NONE, ReturnValueContext.VALUE ) );
+					}
+				}
+				List<AbstractInsnNode> nodes = new ArrayList<>( AsmHelper.array( Type.getType( Object.class ), elements ) );
+				nodes.add( new MethodInsnNode( Opcodes.INVOKESTATIC,
+				    Type.getInternalName( LiteralSpreadUtil.class ),
+				    "positionalArgs",
+				    Type.getMethodDescriptor( Type.getType( Object[].class ), Type.getType( Object[].class ) ),
+				    false ) );
+				return nodes;
+			}
 			return AsmHelper.array( Type.getType( Object.class ), memberAccess.getArguments(),
 			    ( argument, i ) -> transpiler.transform( memberAccess.getArguments().get( i ), TransformerContext.NONE, ReturnValueContext.VALUE ) );
 		} );
-	}
-
-	private List<AbstractInsnNode> generateArgumentProducerLambda( BoxExpression body, Supplier<List<AbstractInsnNode>> nodeSupplier ) {
-		Type		type		= Type.getType( "L" + transpiler.getProperty( "packageName" ).replace( '.', '/' )
-		    + "/" + transpiler.getProperty( "classname" )
-		    + "$Lambda_" + transpiler.incrementAndGetLambdaCounter() + ";" );
-
-		ClassNode	classNode	= new ClassNode();
-
-		classNode.visit(
-		    Opcodes.V21,
-		    Opcodes.ACC_PUBLIC,
-		    type.getInternalName(),
-		    null,
-		    Type.getInternalName( Object.class ),
-		    new String[] { Type.getInternalName( Function.class ) } );
-
-		MethodVisitor initVisitor = classNode.visitMethod( Opcodes.ACC_PUBLIC,
-		    "<init>",
-		    Type.getMethodDescriptor( Type.VOID_TYPE ),
-		    null,
-		    null );
-		initVisitor.visitCode();
-		initVisitor.visitVarInsn( Opcodes.ALOAD, 0 );
-		initVisitor.visitMethodInsn( Opcodes.INVOKESPECIAL,
-		    Type.getInternalName( Object.class ),
-		    "<init>",
-		    Type.getMethodDescriptor( Type.VOID_TYPE ),
-		    false );
-		initVisitor.visitInsn( Opcodes.RETURN );
-		initVisitor.visitEnd();
-
-		// MethodContextTracker t = new MethodContextTracker( false );
-		// transpiler.addMethodContextTracker( t );
-		// Object evaluate( IBoxContext context );
-		MethodVisitor methodVisitor = classNode.visitMethod(
-		    Opcodes.ACC_PUBLIC,
-		    "apply",
-		    Type.getMethodDescriptor( Type.getType( Object.class ), Type.getType( Object.class ) ),
-		    null,
-		    null );
-		methodVisitor.visitCode();
-
-		// t.trackNewContext();
-
-		nodeSupplier.get().forEach( n -> n.accept( methodVisitor ) );
-
-		methodVisitor.visitInsn( Opcodes.ARETURN );
-		methodVisitor.visitMaxs( 0, 0 );
-		methodVisitor.visitEnd();
-
-		// transpiler.popMethodContextTracker();
-
-		transpiler.setAuxiliary( type.getClassName(), classNode );
-
-		List<AbstractInsnNode> nodes = new ArrayList<AbstractInsnNode>();
-
-		nodes.add( new TypeInsnNode( Opcodes.NEW, type.getInternalName() ) );
-		nodes.add( new InsnNode( Opcodes.DUP ) );
-		nodes.add( new MethodInsnNode( Opcodes.INVOKESPECIAL,
-		    type.getInternalName(),
-		    "<init>",
-		    Type.getMethodDescriptor( Type.VOID_TYPE ),
-		    false ) );
-		return nodes;
 	}
 }

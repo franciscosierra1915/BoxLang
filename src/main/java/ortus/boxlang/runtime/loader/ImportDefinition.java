@@ -17,6 +17,8 @@
  */
 package ortus.boxlang.runtime.loader;
 
+import java.util.Objects;
+
 import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
 
 /**
@@ -45,14 +47,97 @@ import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
  * @param className      The class name
  * @param resolverPrefix The resolver prefix
  * @param alias          The alias
+ * @param moduleName     The module name
+ * @param cachedHashCode The pre-computed hash code
+ * @param classRef       The resolved class reference, if available
  */
-public record ImportDefinition( String className, String resolverPrefix, String alias, String moduleName ) {
+public record ImportDefinition( String className, String resolverPrefix, String alias, String moduleName, int cachedHashCode, Class<?> classRef ) {
 
-	// Compact constructor disallows null className
-	public ImportDefinition {
+	/**
+	 * Canonical constructor. Validates className and computes hashCode.
+	 *
+	 * @param className      The class name
+	 * @param resolverPrefix The resolver prefix
+	 * @param alias          The alias
+	 * @param moduleName     The module name
+	 * @param cachedHashCode Ignored; always recomputed
+	 * @param classRef       The resolved class reference, if available
+	 */
+	public ImportDefinition( String className, String resolverPrefix, String alias, String moduleName, int cachedHashCode, Class<?> classRef ) {
 		if ( className == null ) {
 			throw new BoxRuntimeException( "Class name cannot be null." );
 		}
+		this.className		= className;
+		this.resolverPrefix	= resolverPrefix;
+		this.alias			= alias;
+		this.moduleName		= moduleName;
+		this.cachedHashCode	= computeHashCode( className, resolverPrefix, alias, moduleName, classRef );
+		this.classRef		= classRef;
+	}
+
+	/**
+	 * Convenience constructor without hashCode parameter.
+	 *
+	 * @param className      The class name
+	 * @param resolverPrefix The resolver prefix
+	 * @param alias          The alias
+	 * @param moduleName     The module name
+	 */
+	public ImportDefinition( String className, String resolverPrefix, String alias, String moduleName ) {
+		this( className, resolverPrefix, alias, moduleName, 0, null );
+	}
+
+	/**
+	 * Convenience constructor for alias and existing class reference.
+	 *
+	 * @param resolverPrefix The resolver prefix
+	 * @param alias          The alias
+	 * @param classRef       The resolved class reference
+	 */
+	public ImportDefinition( String resolverPrefix, String alias, Class<?> classRef ) {
+		this( alias, resolverPrefix, alias, null, 0, classRef );
+	}
+
+	/**
+	 * Checks if this import has a resolved class reference.
+	 * 
+	 * @return True if a class reference is present, false otherwise.
+	 */
+	public boolean hasClassRef() {
+		return this.classRef != null;
+	}
+
+	/**
+	 * Static factory method to create an import def from a class ref
+	 * 
+	 * @param resolverPrefix The resolver prefix
+	 * @param name           The name of the class
+	 * @param classRef       The resolved class reference
+	 * 
+	 * @return An ImportDefinition instance
+	 */
+	public static ImportDefinition fromClassRef( String resolverPrefix, String name, Class<?> classRef ) {
+		return new ImportDefinition( resolverPrefix, name, classRef );
+	}
+
+	/**
+	 * Computes the hash code from the four string fields.
+	 */
+	private static int computeHashCode( String className, String resolverPrefix, String alias, String moduleName, Class<?> classRef ) {
+		int result = 31 + className.hashCode();
+		result	= 31 * result + Objects.hashCode( resolverPrefix );
+		result	= 31 * result + Objects.hashCode( alias );
+		result	= 31 * result + Objects.hashCode( moduleName );
+		result	= 31 * result + ( classRef != null ? classRef.hashCode() : 0 );
+		return result;
+	}
+
+	/**
+	 * Returns the pre-computed hash code.
+	 */
+	@Override
+	public int hashCode() {
+		return this.cachedHashCode;
 	}
 
 	/**
@@ -71,6 +156,16 @@ public record ImportDefinition( String className, String resolverPrefix, String 
 	 */
 	public Boolean isModuleImport() {
 		return moduleName != null;
+	}
+
+	/**
+	 * Check if impport matches a given name. Uses alias if present, otherwise class name. Case insensitive.
+	 * 
+	 * @return True if the module matches the given name, false otherwise
+	 */
+	public boolean isNamed( String name ) {
+		String nameToCheck = alias != null ? alias : className;
+		return name.equalsIgnoreCase( nameToCheck );
 	}
 
 	/**
@@ -144,6 +239,6 @@ public record ImportDefinition( String className, String resolverPrefix, String 
 			className		= className.substring( resolverDelimiterPos + 1 );
 		}
 
-		return new ImportDefinition( className, resolverPrefix, alias, module );
+		return new ImportDefinition( className, resolverPrefix, alias, module, 0, null );
 	}
 }

@@ -229,9 +229,11 @@ public class TimeUnits extends BIF {
 		if ( arguments.get( Key.date ) == null ) {
 			dateRef = new DateTime( LocalizationUtil.parseZoneId( arguments.getAsString( Key.timezone ), context ) );
 		} else {
+			// Get the locale before parsing the date
+			Locale locale = LocalizationUtil.parseLocaleFromContext( context, arguments );
 
 			dateRef = DateTimeCaster.cast( arguments.get( Key.date ), true,
-			    LocalizationUtil.parseZoneId( arguments.getAsString( Key.timezone ), context ), context );
+			    LocalizationUtil.parseZoneId( arguments.getAsString( Key.timezone ), context ), false, context, locale );
 
 			if ( arguments.get( Key.timezone ) != null ) {
 				dateRef = dateRef.clone( ZoneId.of( arguments.getAsString( Key.timezone ) ) );
@@ -253,16 +255,16 @@ public class TimeUnits extends BIF {
 			Object result =
 				bifMethodKey.equals( BIFMethods.quarter ) ? dateRef.getWrapped().get( IsoFields.QUARTER_OF_YEAR )
 				: bifMethodKey.equals( BIFMethods.month ) ? dateRef.getWrapped().getMonth().getValue()
-				: bifMethodKey.equals( BIFMethods.monthAsString ) ? dateRef.clone().format( MONTH_LONG_FORMAT )
-				: bifMethodKey.equals( BIFMethods.monthShortAsString ) ? dateRef.clone().format( MONTH_SHORT_FORMAT )
+				: bifMethodKey.equals( BIFMethods.monthAsString ) ? dateRef.clone().format( locale, MONTH_LONG_FORMAT )
+				: bifMethodKey.equals( BIFMethods.monthShortAsString ) ? dateRef.clone().format( locale, MONTH_SHORT_FORMAT )
 				: bifMethodKey.equals( BIFMethods.day ) ? dateRef.getWrapped().getDayOfMonth()
 				: bifMethodKey.equals( BIFMethods.dayOfWeek ) ? (
 																locale == null
 																? dateRef.clone().getWrapped().getDayOfWeek().getValue()
 																: dateRef.getWrapped().get( WeekFields.of( locale ).dayOfWeek() )
 																)
-				: bifMethodKey.equals( BIFMethods.dayOfWeekAsString ) ? dateRef.clone().format( DOW_LONG_FORMAT )
-				: bifMethodKey.equals( BIFMethods.dayOfWeekShortAsString ) ? dateRef.clone().format( DOW_SHORT_FORMAT )
+				: bifMethodKey.equals( BIFMethods.dayOfWeekAsString ) ? dateRef.clone().format( locale, DOW_LONG_FORMAT )
+				: bifMethodKey.equals( BIFMethods.dayOfWeekShortAsString ) ? dateRef.clone().format( locale, DOW_SHORT_FORMAT )
 				: bifMethodKey.equals( BIFMethods.daysInMonth ) ? dateRef.getWrapped().getMonth().length( dateRef.isLeapYear() )
 				: bifMethodKey.equals( BIFMethods.daysInYear ) ? Year.of( dateRef.getWrapped().getYear() ).length()
 				: bifMethodKey.equals( BIFMethods.firstDayOfMonth ) ? dateRef.getWrapped().withDayOfMonth( (int) 1 ).getDayOfYear()
@@ -279,7 +281,7 @@ public class TimeUnits extends BIF {
 					bifMethodKey.equals( BIFMethods.timeZone )
 					||
 					bifMethodKey.equals( BIFMethods.getTimeZone )
-				  ) ? dateRef.clone().format( TZ_SHORT_FORMAT )
+				  ) ? dateRef.clone().format( locale, TZ_SHORT_FORMAT )
 				: null;
 			// @formatter:on
 			if ( result == null ) {

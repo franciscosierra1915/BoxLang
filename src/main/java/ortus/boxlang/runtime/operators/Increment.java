@@ -29,12 +29,29 @@ import ortus.boxlang.runtime.scopes.Key;
 public class Increment implements IOperator {
 
 	/**
+	 * Increment a numeric value by 1. Throws if the object is a {@link ortus.boxlang.runtime.types.BoxSet}
+	 * since sets use the + operator for union, not arithmetic.
+	 *
 	 * @param object The object to increment
+	 *
+	 * @return The incremented Number
+	 *
+	 * @throws ortus.boxlang.runtime.types.exceptions.BoxRuntimeException if the object is a BoxSet
+	 */
+	public static Number invoke( Object object ) {
+		if ( object instanceof ortus.boxlang.runtime.types.BoxSet ) {
+			throw new ortus.boxlang.runtime.types.exceptions.BoxRuntimeException( "Cannot increment a Set." );
+		}
+		return ( Number ) Plus.invoke( object, 1 );
+	}
+
+	/**
+	 * @param number The number to increment
 	 *
 	 * @return The result
 	 */
-	public static Number invoke( Object object ) {
-		return Plus.invoke( object, 1 );
+	public static Number invoke( Number number ) {
+		return Plus.invoke( number, 1 );
 	}
 
 	/**
@@ -55,7 +72,7 @@ public class Increment implements IOperator {
 	 */
 	public static Number invokePost( IBoxContext context, Object target, Key name ) {
 		Number	original	= NumberCaster.cast( Referencer.get( context, target, name, false ) );
-		Number	result		= invoke( original );
+		Number	result		= Plus.invoke( original, 1 );
 		Referencer.set( context, target, name, result );
 		return original;
 	}

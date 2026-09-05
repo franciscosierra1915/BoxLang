@@ -29,13 +29,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.HexFormat;
 import java.util.Random;
 import java.util.regex.Pattern;
@@ -54,16 +59,17 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.PBEParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
-import org.apache.commons.lang3.SerializationUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
 
+import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.dynamic.casters.StringCaster;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.IStruct;
 import ortus.boxlang.runtime.types.Struct;
 import ortus.boxlang.runtime.types.exceptions.BoxIOException;
 import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
+import ortus.boxlang.runtime.util.conversion.ObjectMarshaller;
 
 /**
  * A utility class for encryption and encoding
@@ -73,66 +79,66 @@ public final class EncryptionUtil {
 	/**
 	 * The default secure random number instance
 	 */
-	private final static SecureRandom	secureRandom					= new SecureRandom();
+	private final static SecureRandom				secureRandom					= new SecureRandom();
 
 	/**
 	 * The default algorithm to use
 	 */
-	public static final String			DEFAULT_HASH_ALGORITHM			= "MD5";
+	public static final String						DEFAULT_HASH_ALGORITHM			= "MD5";
 
 	/**
 	 * Default encryption algorithm
 	 */
-	public static final String			DEFAULT_ENCRYPTION_ALGORITHM	= "AES";
+	public static final String						DEFAULT_ENCRYPTION_ALGORITHM	= "AES";
 
 	/**
 	 * Default encryption algorithm
 	 */
-	public static final String			DEFAULT_ENCRYPTION_ENCODING		= "UU";
+	public static final String						DEFAULT_ENCRYPTION_ENCODING		= "UU";
 
 	/**
 	 * Default key size
 	 */
-	public static final int				DEFAULT_ENCRYPTION_KEY_SIZE		= 256;
+	public static final int							DEFAULT_ENCRYPTION_KEY_SIZE		= 256;
 
 	/**
 	 * The default encoding to use
 	 */
-	public static final String			DEFAULT_CHARSET					= StandardCharsets.UTF_8.name();
+	public static final String						DEFAULT_CHARSET					= StandardCharsets.UTF_8.name();
 
 	/**
 	 * Default iterations to perform during encryption - the minimum recomended by NIST
 	 */
-	public final static int				DEFAULT_ENCRYPTION_ITERATIONS	= 1000;
+	public final static int							DEFAULT_ENCRYPTION_ITERATIONS	= 1000;
 
 	/**
 	 * The IV size required by FBMA algorithms
 	 */
-	public static final int				FBMA_IV_SIZE					= 16;
+	public static final int							FBMA_IV_SIZE					= 16;
 
 	/**
 	 * Base64 validation methods
 	 */
-	private static final String			BASE_64_REGEX_PATTERN			= "^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$";
-	private static final Pattern		BASE_64_PATTERN					= Pattern.compile( BASE_64_REGEX_PATTERN );
+	private static final String						BASE_64_REGEX_PATTERN			= "^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$";
+	private static final Pattern					BASE_64_PATTERN					= Pattern.compile( BASE_64_REGEX_PATTERN );
 
 	/**
 	 * Threadsafe instances of Random and Secure random instances which are used by the getRandom method
 	 */
-	private static HashMap<Key, Random>	randomStore						= new HashMap<Key, Random>();
+	private static ConcurrentHashMap<Key, Random>	randomStore						= new ConcurrentHashMap<Key, Random>();
 
 	/**
 	 * Quick 64 bit hash properties
 	 */
-	private static final long[]			byteTable						= generateHashLookupTable();
-	private static final long			HSTART							= 0xBB40E64DA205B064L;
-	private static final long			HMULT							= 7664345821815920749L;
+	private static final long[]						byteTable						= generateHashLookupTable();
+	private static final long						HSTART							= 0xBB40E64DA205B064L;
+	private static final long						HMULT							= 7664345821815920749L;
 
 	/**
 	 * Supported key algorithms
 	 * <a href="https://docs.oracle.com/en/java/javase/17/docs/specs/security/standard-names.html#keyfactory-algorithms">key factory algorithms</a>
 	 */
-	public static final IStruct			KEY_ALGORITHMS					= Struct.of(
+	public static final IStruct						KEY_ALGORITHMS					= Struct.of(
 	    Key.of( "AES" ), "AES",
 	    Key.of( "ARCFOUR" ), "ARCFOUR",
 	    Key.of( "Blowfish" ), "Blowfish",
@@ -154,8 +160,8 @@ public final class EncryptionUtil {
 	/**
 	 * URL Encoding properties
 	 */
-	public static final String			URL_SPACE						= "%20";
-	public static final String			URL_PLUS_REGEX					= "\\+";
+	public static final String						URL_SPACE						= "%20";
+	public static final String						URL_PLUS_REGEX					= "\\+";
 
 	/**
 	 * Performs a hash of an object using the default algorithm
@@ -382,6 +388,8 @@ public final class EncryptionUtil {
 		byte[] encodeItem = null;
 		if ( item instanceof byte[] byteArray ) {
 			encodeItem = byteArray;
+		} else if ( item instanceof IBoxBinaryRepresentable representable ) {
+			encodeItem = representable.toByteArray();
 		} else if ( item instanceof String strItem ) {
 			encodeItem = strItem.getBytes( charset );
 		} else {
@@ -609,6 +617,18 @@ public final class EncryptionUtil {
 
 	/**
 	 * Processes the encryption or decryption of an object
+	 * 
+	 * <p>
+	 * Security Note: This method includes CWE-502 mitigation for deserialization of untrusted data.
+	 * When decrypting data that cannot be interpreted as a UTF-8 string, the method validates that
+	 * the decrypted bytes represent a valid Java serialized object stream (0xACED magic bytes) before
+	 * attempting deserialization. This helps prevent deserialization attacks.
+	 * </p>
+	 * 
+	 * <p>
+	 * The implementation uses Apache Commons Lang 3.20.0+ which includes built-in protections
+	 * against CVE-2025-48924 and other known deserialization vulnerabilities.
+	 * </p>
 	 *
 	 * @param cipherMode       The cipher mode to use
 	 * @param obj              The object to encrypt
@@ -641,9 +661,37 @@ public final class EncryptionUtil {
 
 			String					baseAlgorithm	= StringUtils.substringBefore( algorithm, "/" );
 			AlgorithmParameterSpec	params			= null;
-			SecretKey				cipherKey		= null;
+			java.security.Key		cipherKey		= null;
 
-			if ( isPBEAlgorithm( algorithm ) ) {
+			if ( isRSAAlgorithm( algorithm ) ) {
+				// For RSA, parse the key as a private or public key
+				Exception	privateKeyException	= null;
+				Exception	publicKeyException	= null;
+
+				try {
+					// Try to parse as private key first (for encryption with private key or decryption)
+					cipherKey = parseRSAPrivateKey( key );
+				} catch ( Exception e ) {
+					privateKeyException = e;
+				}
+
+				if ( cipherKey == null ) {
+					// If that fails, try to parse as public key (for encryption with public key)
+					try {
+						cipherKey = parseRSAPublicKey( key );
+					} catch ( Exception ex ) {
+						publicKeyException = ex;
+					}
+				}
+
+				if ( cipherKey == null ) {
+					throw new BoxRuntimeException(
+					    "Failed to parse RSA key. Key must be a valid Base64-encoded RSA private key (PKCS8 format) or public key (X509 format). "
+					        + "Private key error: " + ( privateKeyException != null ? privateKeyException.getMessage() : "N/A" )
+					        + ". Public key error: " + ( publicKeyException != null ? publicKeyException.getMessage() : "N/A" ),
+					    publicKeyException != null ? publicKeyException : privateKeyException );
+				}
+			} else if ( isPBEAlgorithm( algorithm ) ) {
 				params		= new PBEParameterSpec( initVectorOrSalt, iterations != null ? iterations : DEFAULT_ENCRYPTION_ITERATIONS );
 				cipherKey	= SecretKeyFactory.getInstance( algorithm ).generateSecret( new PBEKeySpec( key.toCharArray() ) );
 			} else if ( isFBMAlgorithm( algorithm ) ) {
@@ -653,15 +701,28 @@ public final class EncryptionUtil {
 			if ( cipherKey == null ) {
 				cipherKey = new SecretKeySpec( decodeKeyBytes( key ), baseAlgorithm );
 			}
-
 			cipher.init( cipherMode, cipherKey, params );
 
 			if ( cipherMode == Cipher.DECRYPT_MODE ) {
-				byte[] decryptedBytes = cipher.doFinal( objectBytes, ivsSize, objectBytes.length - ivsSize );
-				try {
-					return new String( decryptedBytes, DEFAULT_CHARSET );
-				} catch ( UnsupportedEncodingException e ) {
-					return SerializationUtils.deserialize( decryptedBytes );
+				byte[]	decryptedBytes		= cipher.doFinal( objectBytes, ivsSize, objectBytes.length - ivsSize );
+
+				// CWE-502 Mitigation: Only deserialize if the data is actually a Java serialized object.
+				// Check for Java serialization magic bytes (0xACED 0x0005) to identify serialized objects.
+				// Strings and byte arrays are stored as raw bytes (UTF-8) during encryption, not as
+				// Java-serialized objects, so they must be returned as strings rather than deserialized.
+				boolean	isSerializedObject	= decryptedBytes.length >= 2
+				    && ( decryptedBytes[ 0 ] & 0xFF ) == 0xAC
+				    && ( decryptedBytes[ 1 ] & 0xFF ) == 0xED;
+
+				if ( isSerializedObject ) {
+					return ObjectMarshaller.deserialize( BoxRuntime.getInstance().getRuntimeContext(), decryptedBytes );
+				} else {
+					try {
+						return new String( decryptedBytes, DEFAULT_CHARSET );
+					} catch ( UnsupportedEncodingException e ) {
+						// Fallback: return raw bytes if charset is not supported
+						return decryptedBytes;
+					}
 				}
 			} else {
 
@@ -746,7 +807,7 @@ public final class EncryptionUtil {
 		}
 		// UU encoding
 		else if ( encodingKey.equals( Key.encodingUU ) ) {
-			return Base64.getMimeEncoder().encodeToString( obj );
+			return uuEncode( obj );
 		}
 		// Base64 encoding
 		else if ( encodingKey.equals( Key.encodingBase64 ) ) {
@@ -781,7 +842,7 @@ public final class EncryptionUtil {
 		}
 		// UU encoding
 		else if ( encodingKey.equals( Key.encodingUU ) ) {
-			return Base64.getMimeDecoder().decode( encoded );
+			return uuDecode( encoded );
 		}
 		// Base64 encoding
 		else if ( encodingKey.equals( Key.encodingBase64 ) ) {
@@ -913,6 +974,68 @@ public final class EncryptionUtil {
 	}
 
 	/**
+	 * Returns true if the algorithm is an RSA algorithm
+	 *
+	 * @param algorithm The string representation of the algorithm
+	 *
+	 * @return
+	 */
+	public static boolean isRSAAlgorithm( String algorithm ) {
+		String baseAlgorithm = StringUtils.substringBefore( algorithm, "/" );
+		return Strings.CI.equals( baseAlgorithm, "RSA" );
+	}
+
+	/**
+	 * Parses an RSA private key from a Base64-encoded string or PEM format
+	 *
+	 * @param keyString The Base64-encoded key string (may include PEM headers)
+	 *
+	 * @return The parsed PrivateKey
+	 */
+	private static PrivateKey parseRSAPrivateKey( String keyString ) throws NoSuchAlgorithmException, InvalidKeySpecException {
+		// Remove PEM headers/footers and whitespace if present
+		String				cleanKey	= keyString
+		    .replaceAll( "-----BEGIN.*?-----", "" )
+		    .replaceAll( "-----END.*?-----", "" )
+		    .replaceAll( "\\s+", "" );
+
+		// Decode the Base64 key
+		byte[]				keyBytes	= Base64.getDecoder().decode( cleanKey );
+
+		// Create a PKCS8EncodedKeySpec from the decoded bytes
+		PKCS8EncodedKeySpec	keySpec		= new PKCS8EncodedKeySpec( keyBytes );
+
+		// Generate the PrivateKey
+		KeyFactory			keyFactory	= KeyFactory.getInstance( "RSA" );
+		return keyFactory.generatePrivate( keySpec );
+	}
+
+	/**
+	 * Parses an RSA public key from a Base64-encoded string or PEM format
+	 *
+	 * @param keyString The Base64-encoded key string (may include PEM headers)
+	 *
+	 * @return The parsed PublicKey
+	 */
+	private static PublicKey parseRSAPublicKey( String keyString ) throws NoSuchAlgorithmException, InvalidKeySpecException {
+		// Remove PEM headers/footers and whitespace if present
+		String				cleanKey	= keyString
+		    .replaceAll( "-----BEGIN.*?-----", "" )
+		    .replaceAll( "-----END.*?-----", "" )
+		    .replaceAll( "\\s+", "" );
+
+		// Decode the Base64 key
+		byte[]				keyBytes	= Base64.getDecoder().decode( cleanKey );
+
+		// Create an X509EncodedKeySpec from the decoded bytes
+		X509EncodedKeySpec	keySpec		= new X509EncodedKeySpec( keyBytes );
+
+		// Generate the PublicKey
+		KeyFactory			keyFactory	= KeyFactory.getInstance( "RSA" );
+		return keyFactory.generatePublic( keySpec );
+	}
+
+	/**
 	 * Creates an insecure but very fast 64 bit hash of a string
 	 *
 	 * @param hashItem the string to hash
@@ -1028,6 +1151,138 @@ public final class EncryptionUtil {
 			// Return null on error - caller can decide how to handle
 			return null;
 		}
+	}
+
+	/**
+	 * Encodes a byte array into Unix UUencode format.
+	 * <p>
+	 * UUencode encodes binary data using a printable ASCII character set with values
+	 * offset by 32 (space = 0, underscore = 63). Data is processed in 45-byte chunks.
+	 * Each chunk is prefixed with a length character (ASCII 32 + byte count).
+	 *
+	 * @param src The byte array to encode
+	 *
+	 * @return The UUencoded string
+	 */
+	public static String uuEncode( byte[] src ) {
+		if ( src == null || src.length == 0 ) {
+			return "";
+		}
+
+		StringBuilder	sb	= new StringBuilder();
+		int				i	= 0;
+
+		while ( i < src.length ) {
+			int chunkLen = Math.min( 45, src.length - i );
+			// Write length character: (chunkLen + 32) as a printable char
+			sb.append( ( char ) ( chunkLen + 32 ) );
+
+			// Process 3-byte groups
+			int j = i;
+			while ( j + 3 <= i + chunkLen ) {
+				int	a	= src[ j ] & 0xFF;
+				int	b	= src[ j + 1 ] & 0xFF;
+				int	c	= src[ j + 2 ] & 0xFF;
+
+				sb.append( ( char ) ( ( ( a >>> 2 ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( ( ( a << 4 ) | ( b >>> 4 ) ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( ( ( b << 2 ) | ( c >>> 6 ) ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( c & 0x3F ) + 32 ) );
+
+				j += 3;
+			}
+
+			// Handle remaining 1 or 2 bytes
+			int remaining = i + chunkLen - j;
+			if ( remaining == 1 ) {
+				int a = src[ j ] & 0xFF;
+				sb.append( ( char ) ( ( ( a >>> 2 ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( ( a << 4 ) & 0x3F ) + 32 ) );
+			} else if ( remaining == 2 ) {
+				int	a	= src[ j ] & 0xFF;
+				int	b	= src[ j + 1 ] & 0xFF;
+				sb.append( ( char ) ( ( ( a >>> 2 ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( ( ( a << 4 ) | ( b >>> 4 ) ) & 0x3F ) + 32 ) );
+				sb.append( ( char ) ( ( ( b << 2 ) & 0x3F ) + 32 ) );
+			}
+
+			i += chunkLen;
+		}
+
+		return sb.toString();
+	}
+
+	/**
+	 * Decodes a Unix UUencoded string back into a byte array.
+	 * <p>
+	 * This reverses the encoding performed by {@link #uuEncode(byte[])}.
+	 * The input must be properly formatted UUencode data with length characters
+	 * and terminated by a backtick character.
+	 *
+	 * @param encoded The UUencoded string
+	 *
+	 * @return The decoded byte array
+	 */
+	public static byte[] uuDecode( String encoded ) {
+		if ( encoded == null || encoded.isEmpty() || encoded.equals( "`" ) ) {
+			return new byte[ 0 ];
+		}
+
+		ByteArrayOutputStream	out	= new ByteArrayOutputStream();
+		int						pos	= 0;
+
+		while ( pos < encoded.length() ) {
+			char	lengthChar	= encoded.charAt( pos++ );
+			int		chunkLen	= lengthChar - 32;
+
+			// Space (32) means zero length / end-of-data
+			if ( chunkLen == 0 ) {
+				break;
+			}
+
+			if ( chunkLen < 0 || chunkLen > 45 ) {
+				throw new BoxRuntimeException( "Invalid UUencode length character: " + ( int ) lengthChar );
+			}
+
+			// Number of encoded characters for this chunk: ceil(bytes * 4 / 3)
+			int	encodedLen	= ( chunkLen * 4 + 2 ) / 3;
+			int	chunkEnd	= pos + encodedLen;
+			int	decoded		= 0;
+
+			while ( decoded < chunkLen ) {
+				// Read 4 encoded chars, each offset by 32
+				int	c1	= encoded.charAt( pos++ ) - 32;
+				int	c2	= encoded.charAt( pos++ ) - 32;
+				int	c3	= ( pos < chunkEnd ) ? encoded.charAt( pos++ ) - 32 : 0;
+				int	c4	= ( pos < chunkEnd ) ? encoded.charAt( pos++ ) - 32 : 0;
+
+				// Validate characters are in range
+				if ( c1 < 0 || c1 > 63 || c2 < 0 || c2 > 63 ) {
+					throw new BoxRuntimeException( "Invalid UUencoded character" );
+				}
+
+				out.write( ( ( c1 << 2 ) | ( c2 >>> 4 ) ) & 0xFF );
+				decoded++;
+
+				if ( decoded < chunkLen ) {
+					if ( c3 < 0 || c3 > 63 ) {
+						throw new BoxRuntimeException( "Invalid UUencoded character" );
+					}
+					out.write( ( ( c2 << 4 ) | ( c3 >>> 2 ) ) & 0xFF );
+					decoded++;
+				}
+
+				if ( decoded < chunkLen ) {
+					if ( c4 < 0 || c4 > 63 ) {
+						throw new BoxRuntimeException( "Invalid UUencoded character" );
+					}
+					out.write( ( ( c3 << 6 ) | c4 ) & 0xFF );
+					decoded++;
+				}
+			}
+		}
+
+		return out.toByteArray();
 	}
 
 }

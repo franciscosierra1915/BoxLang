@@ -17,10 +17,12 @@
  */
 package ortus.boxlang.runtime.util.conversion;
 
+import java.time.Duration;
 import java.time.LocalDate;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 import com.fasterxml.jackson.jr.ob.api.ReaderWriterProvider;
 import com.fasterxml.jackson.jr.ob.api.ValueReader;
@@ -28,8 +30,9 @@ import com.fasterxml.jackson.jr.ob.api.ValueWriter;
 import com.fasterxml.jackson.jr.ob.impl.JSONReader;
 import com.fasterxml.jackson.jr.ob.impl.JSONWriter;
 
-import ortus.boxlang.runtime.interop.DynamicObject;
+import ortus.boxlang.runtime.dynamic.casters.DateTimeCaster;
 import ortus.boxlang.runtime.runnables.IClassRunnable;
+import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.DateTime;
 import ortus.boxlang.runtime.types.Function;
 import ortus.boxlang.runtime.types.Query;
@@ -42,10 +45,14 @@ import ortus.boxlang.runtime.util.conversion.serializers.BoxArraySerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.BoxClassSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.BoxFunctionSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.BoxQuerySerializer;
+import ortus.boxlang.runtime.util.conversion.serializers.BoxSetSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.BoxStructSerializer;
+import ortus.boxlang.runtime.util.conversion.serializers.DurationSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.DynamicObjectSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.ExceptionSerializer;
 import ortus.boxlang.runtime.util.conversion.serializers.JavaArraySerializer;
+import ortus.boxlang.runtime.util.conversion.serializers.KeySerializer;
+import ortus.boxlang.runtime.util.conversion.serializers.NumberSerializer;
 
 /**
  * This class provides a JSON provider for BoxLang using our lib: Jackson JR
@@ -58,7 +65,11 @@ public class BoxJsonProvider extends ReaderWriterProvider {
 	@Override
 	public ValueWriter findValueWriter( JSONWriter writeContext, Class<?> type ) {
 
-		if ( type == DateTime.class || type == LocalDate.class || type == Date.class || type == java.sql.Date.class ) {
+		if ( Duration.class.isAssignableFrom( type ) ) {
+			return new DurationSerializer();
+		}
+
+		if ( DateTimeCaster.isKnownDateClass( type ) ) {
 			return new DateTime();
 		}
 
@@ -74,16 +85,18 @@ public class BoxJsonProvider extends ReaderWriterProvider {
 			return new BoxArraySerializer();
 		}
 
+		// Place Set BEFORE Map so a BoxSet (which is a Set) doesn't get routed
+		// through the Map/Struct serializer.
+		if ( Set.class.isAssignableFrom( type ) ) {
+			return new BoxSetSerializer();
+		}
+
 		if ( Function.class.isAssignableFrom( type ) ) {
 			return new BoxFunctionSerializer();
 		}
 
 		if ( Map.class.isAssignableFrom( type ) ) {
 			return new BoxStructSerializer();
-		}
-
-		if ( type == DynamicObject.class ) {
-			return new DynamicObjectSerializer();
 		}
 
 		if ( Throwable.class.isAssignableFrom( type ) ) {
@@ -94,6 +107,21 @@ public class BoxJsonProvider extends ReaderWriterProvider {
 			return new JavaArraySerializer();
 		}
 
+		if ( Key.class.isAssignableFrom( type ) ) {
+			return new KeySerializer();
+		}
+
+		// Use our strict string caster for all numbers to strip trailing zeros and avoid scientific notation
+		if ( Number.class.isAssignableFrom( type ) ) {
+			return new NumberSerializer();
+		}
+
+		// Fall back for all other objects that aren't "simple"
+		if ( !String.class.isAssignableFrom( type ) && !Boolean.class.isAssignableFrom( type ) && !UUID.class.isAssignableFrom( type ) ) {
+			return new DynamicObjectSerializer();
+		}
+
+		// Let Jackson decide
 		return null;
 	}
 

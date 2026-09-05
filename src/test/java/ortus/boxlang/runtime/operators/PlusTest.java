@@ -21,9 +21,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.ZoneId;
 
 import ortus.boxlang.runtime.context.IBoxContext;
 import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
@@ -31,10 +29,6 @@ import ortus.boxlang.runtime.scopes.IScope;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.scopes.VariablesScope;
 import ortus.boxlang.runtime.types.DateTime;
-
-import ortus.boxlang.runtime.types.util.MathUtil;
-
-import ortus.boxlang.runtime.dynamic.casters.NumberCaster;
 
 public class PlusTest {
 
@@ -51,7 +45,7 @@ public class PlusTest {
 	@Test
 	void testItCanAddStrings() {
 		assertThat( Plus.invoke( "3", "2" ) ).isEqualTo( 5 );
-		assertThat( Plus.invoke( "3.5", "2.5" ).doubleValue() ).isEqualTo( 6 );
+		assertThat( ( ( Number ) Plus.invoke( "3.5", "2.5" ) ).doubleValue() ).isEqualTo( 6 );
 	}
 
 	@DisplayName( "It can compound add" )

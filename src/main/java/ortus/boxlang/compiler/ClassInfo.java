@@ -1,7 +1,7 @@
 package ortus.boxlang.compiler;
 
-import java.net.URL;
-import java.nio.file.Paths;
+import java.io.Closeable;
+import java.io.IOException;
 
 import ortus.boxlang.compiler.parser.BoxSourceType;
 import ortus.boxlang.compiler.parser.Parser;
@@ -26,7 +26,7 @@ public record ClassInfo(
     BoxSourceType sourceType,
     String source,
     long lastModified,
-    DiskClassLoader[] diskClassLoader,
+    ClassLoader[] generatedClassLoader,
     InterfaceProxyDefinition interfaceProxyDefinition,
     IBoxpiler boxpiler,
     ResolvedFilePath resolvedFilePath,
@@ -72,7 +72,7 @@ public record ClassInfo(
 		    sourceType,
 		    source,
 		    0L,
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    null,
 		    boxpiler,
 		    null,
@@ -100,7 +100,7 @@ public record ClassInfo(
 		    sourceType,
 		    source,
 		    0L,
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    null,
 		    boxpiler,
 		    null,
@@ -128,7 +128,7 @@ public record ClassInfo(
 		    sourceType,
 		    null,
 		    isTrustedCache() ? 0 : resolvedFilePath.absolutePath().toFile().lastModified(),
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    null,
 		    boxpiler,
 		    resolvedFilePath,
@@ -147,7 +147,23 @@ public record ClassInfo(
 	 * @return A new ClassInfo instance for the class
 	 */
 	public static ClassInfo forClass( ResolvedFilePath resolvedFilePath, BoxSourceType sourceType, IBoxpiler boxpiler ) {
-		FQN fqn = resolvedFilePath.getFQN( "boxgenerated.boxclass" );
+		return forClass( resolvedFilePath, sourceType, boxpiler, null );
+	}
+
+	/**
+	 * Create a ClassInfo for a BoxLang class from a file on disk.
+	 *
+	 * @param resolvedFilePath The resolved file path to the class file
+	 * @param sourceType       The type of the source (BoxLang, CFML, etc.)
+	 * @param boxpiler         The boxpiler instance to use for compilation
+	 * @param fqn              The FQN to use for the class (if null, it will be generated from the resolved file path)
+	 *
+	 * @return A new ClassInfo instance for the class
+	 */
+	public static ClassInfo forClass( ResolvedFilePath resolvedFilePath, BoxSourceType sourceType, IBoxpiler boxpiler, FQN fqn ) {
+		if ( fqn == null ) {
+			fqn = resolvedFilePath.getFQN( "boxgenerated.boxclass" );
+		}
 		return new ClassInfo(
 		    fqn,
 		    resolvedFilePath.getBoxFQN(),
@@ -156,7 +172,7 @@ public record ClassInfo(
 		    sourceType,
 		    null,
 		    isTrustedCache() ? 0 : resolvedFilePath.absolutePath().toFile().lastModified(),
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    null,
 		    boxpiler,
 		    resolvedFilePath,
@@ -184,7 +200,7 @@ public record ClassInfo(
 		    sourceType,
 		    source,
 		    0L,
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    null,
 		    boxpiler,
 		    null,
@@ -212,7 +228,7 @@ public record ClassInfo(
 		    null,
 		    null,
 		    0L,
-		    new DiskClassLoader[ 1 ],
+		    new ClassLoader[ 1 ],
 		    interfaceProxyDefinition,
 		    boxpiler,
 		    null,
@@ -239,27 +255,64 @@ public record ClassInfo(
 	}
 
 	/**
-	 * Get or create the DiskClassLoader for this class.
+	 * Get or create the class loader used to resolve this generated class.
 	 * Uses double-checked locking to ensure thread-safe lazy initialization.
+	 * <p>
+	 * The concrete loader is supplied by the runtime's {@link ortus.boxlang.runtime.loader.IClassLoaderFactory}:
+	 * the default builds a {@link DiskClassLoader} (which {@code defineClass()}es bytecode and
+	 * JIT-compiles on miss), while targets that cannot {@code defineClass} at runtime (e.g. Android
+	 * AOT) supply a resolve-only loader that delegates to a parent holding the pre-compiled classes.
 	 *
-	 * @return The DiskClassLoader for this class
+	 * @return The class loader for this class
 	 */
-	public DiskClassLoader getClassLoader() {
-		if ( diskClassLoader[ 0 ] != null ) {
-			return diskClassLoader[ 0 ];
+	public ClassLoader getClassLoader() {
+		if ( generatedClassLoader[ 0 ] != null ) {
+			return generatedClassLoader[ 0 ];
 		}
 		synchronized ( this ) {
-			if ( diskClassLoader[ 0 ] != null ) {
-				return diskClassLoader[ 0 ];
+			if ( generatedClassLoader[ 0 ] != null ) {
+				return generatedClassLoader[ 0 ];
 			}
-			diskClassLoader[ 0 ] = new DiskClassLoader(
-			    new URL[] {},
-			    boxpiler().getClass().getClassLoader(),
-			    Paths.get( BoxRuntime.getInstance().getConfiguration().classGenerationDirectory ),
-			    boxpiler(),
-			    classPoolName()
-			);
-			return diskClassLoader[ 0 ];
+			generatedClassLoader[ 0 ] = BoxRuntime.getInstance()
+			    .getClassLoaderFactory()
+			    .createGeneratedClassLoader( BoxRuntime.getInstance(), boxpiler(), classPoolName() );
+			return generatedClassLoader[ 0 ];
+		}
+	}
+
+	/**
+	 * Get the loader as a {@link DiskClassLoader} for the bytecode-defining compile paths
+	 * (ASM/Java/NoOp boxpilers) that need {@code defineClass*}. These run only under the default
+	 * factory, which always yields a {@link DiskClassLoader}; on resolve-only targets the boxpiler
+	 * never reaches these calls.
+	 *
+	 * @return The disk class loader for this class
+	 */
+	public DiskClassLoader getDiskClassLoader() {
+		ClassLoader loader = getClassLoader();
+		if ( loader instanceof DiskClassLoader diskLoader ) {
+			return diskLoader;
+		}
+		throw new BoxRuntimeException( "Generated class loader is not a DiskClassLoader; bytecode definition is not supported on this target." );
+	}
+
+	/**
+	 * Close and discard this class's loader, if one was created. The next {@link #getClassLoader()}
+	 * call will lazily build a fresh one.
+	 */
+	public void shutdownClassLoader() {
+		synchronized ( this ) {
+			if ( generatedClassLoader[ 0 ] != null ) {
+				// Resolve-only loaders (e.g. Android) are not Closeable; only DiskClassLoader/URLClassLoader is.
+				if ( generatedClassLoader[ 0 ] instanceof Closeable closeable ) {
+					try {
+						closeable.close();
+					} catch ( IOException e ) {
+						e.printStackTrace();
+					}
+				}
+				generatedClassLoader[ 0 ] = null;
+			}
 		}
 	}
 
@@ -272,11 +325,19 @@ public record ClassInfo(
 	@SuppressWarnings( "unchecked" )
 	public Class<IBoxRunnable> getDiskClass() {
 		waitWhileCompiling();
+		Class<IBoxRunnable> clazz;
 		try {
-			return ( Class<IBoxRunnable> ) getClassLoader().loadClass( fqn().toString() );
+			// use forName() so we can force the static initializers to run...
+			clazz = ( Class<IBoxRunnable> ) getClassLoader().loadClass( fqn().toString() );
 		} catch ( ClassNotFoundException e ) {
 			throw new BoxRuntimeException( "Error compiling source " + fqn().toString(), e );
+		} catch ( ExceptionInInitializerError e ) {
+			// This can happen if the super class isn't found, but this CL will NEVER TRY TO LOAD THIS CLASS AGAIN.
+			// Shutdown this tainted CL, so the next time we try, it will create a new one and try again
+			shutdownClassLoader();
+			throw e;
 		}
+		return clazz;
 	}
 
 	/**
@@ -415,8 +476,21 @@ public record ClassInfo(
 	 * Clears the in-memory cache of loaded classes.
 	 */
 	public void clearCacheClass() {
-		if ( diskClassLoader[ 0 ] != null ) {
-			diskClassLoader[ 0 ].clearClassesCache();
+		// clearClassesCache is DiskClassLoader-specific; resolve-only loaders have no JIT cache to clear.
+		if ( generatedClassLoader[ 0 ] instanceof DiskClassLoader diskLoader ) {
+			diskLoader.clearClassesCache();
+		}
+	}
+
+	/**
+	 * Get fresh last modified from path, regardless of what's currenlty cached in the record.
+	 * If trusted cache is enabled, this will always return 0,
+	 */
+	public long getFreshLastModified() {
+		if ( resolvedFilePath != null ) {
+			return isTrustedCache() ? 0 : resolvedFilePath.absolutePath().toFile().lastModified();
+		} else {
+			return 0L;
 		}
 	}
 }

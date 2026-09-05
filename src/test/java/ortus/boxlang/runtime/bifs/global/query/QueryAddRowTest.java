@@ -19,10 +19,12 @@
 package ortus.boxlang.runtime.bifs.global.query;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -299,6 +301,85 @@ public class QueryAddRowTest {
 		Query qry = variables.getAsQuery( result );
 		assertThat( qry.size() ).isEqualTo( 1 );
 		assertThat( variables.get( Key.of( "recordCount" ) ) ).isEqualTo( 1 );
+	}
+
+	@Disabled( "This test is disabled as you go down a rabbit hole, we need to discuss this further" )
+	@DisplayName( "It can validate cell types" )
+	@Test
+	public void testValidateCellTypes() {
+		// @formatter:off
+		assertThrows( RuntimeException.class, () -> instance.executeSource( """
+			myQuery = queryNew( "title,pageLength,createdDate", "string,integer,date" )
+			myQuery.addRow(  [ "The Fellowship Of the Ring", "not_an_integer", "not_a_date" ] )
+			println( myQuery )
+		""", context ) );
+		// @formatter:on
+	}
+
+	@DisplayName( "It casts string values to integer when adding rows via array" )
+	@Test
+	public void testCastsStringToIntegerArray() {
+		// @formatter:off
+		instance.executeSource( """
+			result = queryNew( "amount", "integer" )
+			queryAddRow( result, [["1500"],["2500"]] )
+		""", context );
+		// @formatter:on
+		Query qry = variables.getAsQuery( result );
+		assertThat( qry.size() ).isEqualTo( 2 );
+		assertThat( qry.getCell( Key.of( "amount" ), 0 ) ).isInstanceOf( Integer.class );
+		assertThat( qry.getCell( Key.of( "amount" ), 0 ) ).isEqualTo( 1500 );
+		assertThat( qry.getCell( Key.of( "amount" ), 1 ) ).isEqualTo( 2500 );
+	}
+
+	@DisplayName( "It casts string values to integer when adding rows via struct" )
+	@Test
+	public void testCastsStringToIntegerStruct() {
+		// @formatter:off
+		instance.executeSource( """
+			result = queryNew( "id,amount", "integer,double" )
+			queryAddRow( result, { id: "42", amount: "99.99" } )
+		""", context );
+		// @formatter:on
+		Query qry = variables.getAsQuery( result );
+		assertThat( qry.size() ).isEqualTo( 1 );
+		assertThat( qry.getCell( Key.of( "id" ), 0 ) ).isInstanceOf( Integer.class );
+		assertThat( qry.getCell( Key.of( "id" ), 0 ) ).isEqualTo( 42 );
+		assertThat( qry.getCell( Key.of( "amount" ), 0 ) ).isInstanceOf( Double.class );
+		assertThat( qry.getCell( Key.of( "amount" ), 0 ) ).isEqualTo( 99.99 );
+	}
+
+	@DisplayName( "It casts values added via addRow so QoQ math works" )
+	@Test
+	public void testCastingEnablesQoQMathViaAddRow() {
+		// @formatter:off
+		instance.executeSource( """
+			myQry = queryNew( "amount", "integer" )
+			queryAddRow( myQry, [["1500"]] )
+			result = queryExecute(
+				"SELECT amount/100 as calc FROM myQry",
+				[],
+				{ dbType: "query" }
+			)
+		""", context );
+		// @formatter:on
+		Query qry = variables.getAsQuery( result );
+		assertThat( qry.size() ).isEqualTo( 1 );
+		assertThat( ( ( Number ) qry.getCell( Key.of( "calc" ), 0 ) ).intValue() ).isEqualTo( 15 );
+	}
+
+	@DisplayName( "It casts values added via member function addRow" )
+	@Test
+	public void testCastingViaMemberFunction() {
+		// @formatter:off
+		instance.executeSource( """
+			result = queryNew( "price", "double" )
+			result.addRow( { price: "45.67" } )
+		""", context );
+		// @formatter:on
+		Query qry = variables.getAsQuery( result );
+		assertThat( qry.getCell( Key.of( "price" ), 0 ) ).isInstanceOf( Double.class );
+		assertThat( qry.getCell( Key.of( "price" ), 0 ) ).isEqualTo( 45.67 );
 	}
 
 }

@@ -69,30 +69,26 @@ public class BoxDoTransformer extends AbstractTransformer {
 		nodes.add( start );
 
 		nodes.addAll( transpiler.transform( boxDo.getBody(), TransformerContext.NONE, ReturnValueContext.VALUE_OR_NULL ) );
-
-		nodes.add( new JumpInsnNode( Opcodes.GOTO, continueLabel ) );
-
-		nodes.add( breakTarget );
-
 		nodes.addAll( varStore.nodes() );
-
-		nodes.add( new JumpInsnNode( Opcodes.GOTO, end ) );
 
 		nodes.add( continueLabel );
-		nodes.addAll( varStore.nodes() );
 
 		nodes.addAll( transpiler.transform( boxDo.getCondition(), TransformerContext.RIGHT, ReturnValueContext.VALUE ) );
-		nodes.add( new MethodInsnNode( Opcodes.INVOKESTATIC,
-		    Type.getInternalName( BooleanCaster.class ),
-		    "cast",
-		    Type.getMethodDescriptor( Type.getType( Boolean.class ), Type.getType( Object.class ) ),
-		    false ) );
+		if ( !boxDo.getCondition().returnsBoolean() ) {
+			nodes.add( new MethodInsnNode( Opcodes.INVOKESTATIC,
+			    Type.getInternalName( BooleanCaster.class ),
+			    "cast",
+			    Type.getMethodDescriptor( Type.getType( Boolean.class ), Type.getType( Object.class ) ),
+			    false ) );
+		}
 		nodes.add( new MethodInsnNode( Opcodes.INVOKEVIRTUAL,
 		    Type.getInternalName( Boolean.class ),
 		    "booleanValue",
 		    Type.getMethodDescriptor( Type.BOOLEAN_TYPE ),
 		    false ) );
 		nodes.add( new JumpInsnNode( Opcodes.IFNE, start ) );
+
+		nodes.add( breakTarget );
 
 		nodes.add( end );
 

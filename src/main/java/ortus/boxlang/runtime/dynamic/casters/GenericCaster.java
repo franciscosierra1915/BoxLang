@@ -30,8 +30,8 @@ import ortus.boxlang.runtime.context.IBoxContext;
 import ortus.boxlang.runtime.interop.DynamicObject;
 import ortus.boxlang.runtime.operators.InstanceOf;
 import ortus.boxlang.runtime.runnables.IClassRunnable;
+import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.BoxLangType;
-import ortus.boxlang.runtime.types.DateTime;
 import ortus.boxlang.runtime.types.NullValue;
 import ortus.boxlang.runtime.types.Query;
 import ortus.boxlang.runtime.types.exceptions.BoxCastException;
@@ -56,15 +56,33 @@ public class GenericCaster implements IBoxCaster {
 	 * @return A CastAttempt, which contains the casted value, if successful
 	 */
 	public static CastAttempt<Object> attempt( IBoxContext context, Object object, Object oType, boolean strict ) {
-		String type;
+		Key type;
 		if ( oType instanceof BoxLangType boxType ) {
-			type = boxType.name();
+			type = boxType.getKey();
 		} else {
-			type = StringCaster.cast( oType );
+			type = KeyCaster.cast( oType );
 		}
 
+		return attempt( context, object, type, strict );
+	}
+
+	/**
+	 * Tests to see if the value can be cast
+	 * Returns a {@code CastAttempt<T>} which will contain the result if casting was
+	 * was successfull, or can be interogated to proceed otherwise.
+	 * If the cast type was "null" or "void" the CastAttempt will contain a NullValue() instance.
+	 * If the input value is null and the type is "any", the CastAttempt will contain a NullValue() instance.
+	 *
+	 * @param object The value to cast
+	 * @param oType  The type to cast to
+	 * @param strict True to throw exception when casting non-null value to null/void
+	 *
+	 * @return A CastAttempt, which contains the casted value, if successful
+	 */
+	public static CastAttempt<Object> attempt( IBoxContext context, Object object, Key type, boolean strict ) {
+
 		// Represent legit null values in a NullValue instance
-		if ( type.equalsIgnoreCase( "null" ) || type.equalsIgnoreCase( "void" ) ) {
+		if ( type.equals( Key.nulls ) || type.equals( Key._void ) ) {
 			if ( strict && object != null ) {
 				throw new BoxCastException(
 				    String.format( "Cannot cast type [%s] to %s.", TypeUtil.getObjectName( object ), type )
@@ -74,7 +92,7 @@ public class GenericCaster implements IBoxCaster {
 		}
 
 		// Represent legit null values in a NullValue instance
-		if ( type.equalsIgnoreCase( "any" ) && object == null ) {
+		if ( type.equals( Key._ANY ) && object == null ) {
 			return CastAttempt.ofNullable( new NullValue() );
 		}
 
@@ -106,7 +124,7 @@ public class GenericCaster implements IBoxCaster {
 	 * @return The value
 	 */
 	public static Object cast( IBoxContext context, Object object, Object oType ) {
-		return cast( context, object, oType, true );
+		return cast( false, context, object, oType, true );
 	}
 
 	/**
@@ -138,24 +156,108 @@ public class GenericCaster implements IBoxCaster {
 	 * @return The value, or null when cannot be cast or if the type was "null" or "void"
 	 */
 	public static Object cast( boolean allowTruncate, IBoxContext context, Object object, Object oType, Boolean fail ) {
+		return cast( allowTruncate, context, object, KeyCaster.cast( oType ), fail );
+	}
 
-		String	originalCaseType	= StringCaster.cast( oType );
-		String	type				= originalCaseType.toLowerCase();
+	/**
+	 * Used to cast anything. Note, when fail is set to false, it is not possible to differentiate between
+	 * a failed cast and a successful cast to type "null" or "void". The same ambiguity exists for an input
+	 * of null and a type of "any". For these cases, use the attempt() method and check the optional
+	 * for a NullValue() instance.
+	 *
+	 * @param object The value to cast
+	 * @param oType  The type to cast to
+	 * @param fail   True to throw exception when failing.
+	 *
+	 * @return The value, or null when cannot be cast or if the type was "null" or "void"
+	 */
+	public static Object cast( boolean allowTruncate, IBoxContext context, Object object, Key type, Boolean fail ) {
 
-		if ( type.equals( "null" ) || type.equals( "void" ) ) {
-			return null;
-		}
-
-		if ( type.equals( "any" ) || type.equals( "object" ) ) {
-			return object;
+		switch ( type.getNameNoCase() ) {
+			case "null" :
+			case "void" :
+				return null;
+			case "any" :
+			case "object" :
+				return object;
+			case "string" :
+				return StringCaster.cast( object, null, fail );
+			case "string_strict" :
+				return StringCasterStrict.cast( object, null, fail );
+			case "double" :
+				return DoubleCaster.cast( object, fail );
+			case "numeric" :
+			case "number" :
+				return NumberCaster.cast( object, fail );
+			case "boolean" :
+				return BooleanCaster.cast( object, fail );
+			case "bit" :
+				return Boolean.TRUE.equals( BooleanCaster.cast( object, fail ) ) ? 1 : 0;
+			case "bigdecimal" :
+			case "decimal" :
+				return BigDecimalCaster.cast( object, fail );
+			case "biginteger" :
+				return BigIntegerCaster.cast( object, fail );
+			case "char" :
+				return CharacterCaster.cast( object, fail );
+			case "byte" :
+				return ByteCaster.cast( object, fail );
+			case "float" :
+				return FloatCaster.cast( object, fail );
+			case "array" :
+				return ArrayCaster.cast( object, fail );
+			case "stringbuilder" :
+				return StringBuilderCaster.cast( object, fail );
+			case "stringbuilderstrict" :
+				return StringBuilderCasterStrict.cast( object, fail );
+			case "set" :
+				// Strict: only accept actual Sets. Use the explicit `toSet()` member or
+				// `setNew(...)` BIF to convert arrays / lists / etc.
+				return SetCaster.cast( object, fail );
+			case "modifiableset" :
+				return ModifiableSetCaster.cast( object, fail );
+			case "datetime" :
+			case "date" :
+			case "timestamp" :
+				return DateTimeCaster.cast( object, fail, context );
+			case "time" :
+				return TimeCaster.cast( object, fail );
+			case "modifiablearray" :
+				return ModifiableArrayCaster.cast( object, fail );
+			case "assignablearray" :
+				return AssignableArrayCaster.cast( object, fail );
+			case "struct" :
+				return StructCaster.cast( object, fail );
+			case "collection" :
+				return CollectionCaster.cast( object, fail );
+			case "structloose" :
+				return StructCasterLoose.cast( object, fail );
+			case "modifiablestruct" :
+				return ModifiableStructCaster.cast( object, fail );
+			case "xml" :
+				return XMLCaster.cast( object, fail );
+			case "function" :
+				return FunctionCaster.cast( object, fail );
+			case "int" :
+			case "integer" :
+				return IntegerCaster.cast( allowTruncate, object, fail );
+			case "long" :
+				return LongCaster.cast( allowTruncate, object, fail );
+			case "short" :
+				return ShortCaster.cast( allowTruncate, object, fail );
+			case "integertruncate" :
+				return IntegerCaster.cast( true, object, fail );
+			case "longtruncate" :
+				return LongCaster.cast( true, object, fail );
+			case "shorttruncate" :
+				return ShortCaster.cast( true, object, fail );
 		}
 
 		// Handle arrays like int[], or java.lang.String[]
-		if ( type.endsWith( "[]" ) ) {
+		if ( type.getName().endsWith( "[]" ) ) {
 			// Remove the []
-			String newType = type.substring( 0, type.length() - 2 );
-			originalCaseType = originalCaseType.substring( 0, originalCaseType.length() - 2 );
-			Class<?>	newTypeClass	= getClassFromType( context, newType, originalCaseType, false );
+			Key			newType			= Key.of( type.getName().substring( 0, type.getName().length() - 2 ) );
+			Class<?>	newTypeClass	= getClassFromType( context, newType, false );
 			// Typed as Object instead of Object[] in case we're creating an array of primitives
 			Object		result;
 			Boolean		convertToArray	= false;
@@ -178,12 +280,16 @@ public class GenericCaster implements IBoxCaster {
 			} else {
 				if ( fail ) {
 					throw new BoxCastException(
-					    String.format( "You asked for type %s, but input %s cannot be cast to an array.", type,
+					    String.format( "You asked for type %s, but input %s cannot be cast to an array.", type.getName(),
 					        TypeUtil.getObjectName( object ) )
 					);
 				} else {
 					return null;
 				}
+			}
+			if ( result == null ) {
+				// This should only happen if fail is false.
+				return null;
 			}
 			if ( convertToArray ) {
 				// unsafe cast to Object[] is OK here because the convertToArray flag will never be true
@@ -193,216 +299,113 @@ public class GenericCaster implements IBoxCaster {
 			return result;
 		}
 
-		// Allow longTruncate, integerTruncate, shortTruncate, etc to passthru
-		if ( type.endsWith( "truncate" ) ) {
-			allowTruncate	= true;
-			type			= type.substring( 0, type.length() - 8 ).trim();
-		}
-
 		// We will fall back to an instanceof check below as a last resort if we don't recognize the type being validated
 		// but we need a special case here such that if the incoming value is a Box Class instance, we FORCE an instanceof check.
 		// This allows Box Class names who just happen to be the same as one of our pre-defined types like "String" or "Email".
-		// The downside is a Box Class named String.bx would be accepted for an argument typed as "String", but there's no real way around the ambiguity.
-		if ( object instanceof IClassRunnable ) {
-			if ( InstanceOf.invoke( context, object, type ) ) {
-				return object;
-			} else if ( type.equals( "component" ) || type.equals( "class" ) || type.equals( "struct" ) || type.equals( "structloose" )
-			    || type.equals( "modifiablestruct" ) ) {
+		// Only the less-common type names below are allowed to be overriden though. This caster is very "hot" code and the
+		// intsanceof check is measurable overhead, even though it's fast.
+		boolean isClassRunnable = false;
+		if ( object != null && IClassRunnable.class.isAssignableFrom( object.getClass() ) ) {
+			isClassRunnable = true;
+			if ( type.equals( Key.component ) || type.equals( Key._CLASS ) || type.equals( Key._STRUCT ) || type.equals( Key.structLoose )
+			    || type.equals( Key.modifiableStruct ) ) {
 				// Any Box Class is also considered of type "component" or "class" or "struct" or "structloose" or "modifiablestruct"
 				return object;
-			} else if ( type.equals( "collection" ) ) {
+			} else if ( InstanceOf.invoke( context, object, type.getName() ) ) {
+				return object;
+			} else if ( type.equals( Key.collection ) ) {
 				// Need a special case for collections, since we'll never hit the generic check below
 				return CollectionCaster.cast( object, fail );
 			} else if ( fail ) {
-				throw new BoxCastException( String.format( "Could not cast object [%s] to type [%s]", object.getClass().getSimpleName(), type ) );
+				throw new BoxCastException(
+				    String.format( "Could not cast object [%s] to type [%s]", TypeUtil.getObjectName( object ), type.getName() ) );
 			} else {
 				return null;
 			}
 
 		}
 
-		if ( type.equals( "component" ) || type.equals( "class" ) ) {
+		switch ( type.getNameNoCase() ) {
+			case "component" :
+			case "class" :
+				// If it was a class, we will have caught it above. Nothing to do now but fail.
+				if ( fail ) {
+					throwCastException( type, object );
+				} else {
+					return null;
+				}
+			case "throwable" :
+				return ThrowableCaster.cast( object, fail );
+			case "key" :
+				return KeyCaster.cast( object, fail );
+			case "uuid" :
+				return UUIDCaster.cast( object, fail );
+			case "guid" :
+				return GUIDCaster.cast( object, fail );
+			case "variablename" :
+				return VariableNameCaster.cast( object, fail );
+			case "email" :
+				return EmailCaster.cast( object, fail );
+			case "binary" :
+				return BinaryCaster.cast( object, fail );
+			case "query" :
+				// No real "casting" to do, just return it if it is one
+				if ( object instanceof Query ) {
+					return object;
+				}
+				if ( fail ) {
+					throwCastException( type, object );
+				} else {
+					return null;
+				}
+			case "file" :
+			case "boxfile" :
+				return BoxFileCaster.cast( context, object, fail );
+			case "stream" :
+				if ( !isClassRunnable ) {
+					// No real "casting" to do, just return it if it is one
+					if ( object instanceof Stream ) {
+						return object;
+					}
+					if ( object instanceof IntStream is ) {
+						return is.boxed();
+					}
+					if ( object instanceof DoubleStream ds ) {
+						return ds.boxed();
+					}
+					if ( object instanceof LongStream ls ) {
+						return ls.boxed();
+					}
 
-			// If it was a class, we will have caught it above. Nothing to do now but fail.
-
-			if ( fail ) {
-				throwCastException( type, object );
-			} else {
-				return null;
-			}
-		}
-
-		if ( type.equals( "string" ) ) {
-			return StringCaster.cast( object, fail );
-		}
-		if ( type.equals( "string_strict" ) ) {
-			return StringCasterStrict.cast( object, fail );
-		}
-		if ( type.equals( "double" ) ) {
-			return DoubleCaster.cast( object, fail );
-		}
-		if ( type.equals( "numeric" ) || type.equals( "number" ) ) {
-			return NumberCaster.cast( object, fail );
-		}
-		if ( type.equals( "boolean" ) ) {
-			return BooleanCaster.cast( object, fail );
-		}
-		if ( type.equals( "bit" ) ) {
-			return Boolean.TRUE.equals( BooleanCaster.cast( object, fail ) ) ? 1 : 0;
-		}
-		if ( type.equals( "bigdecimal" ) || type.equals( "decimal" ) ) {
-			return BigDecimalCaster.cast( object, fail );
-		}
-		if ( type.equals( "biginteger" ) ) {
-			return BigIntegerCaster.cast( object, fail );
-		}
-		if ( type.equals( "char" ) ) {
-			return CharacterCaster.cast( object, fail );
-		}
-		if ( type.equals( "byte" ) ) {
-			return ByteCaster.cast( object, fail );
-		}
-		if ( type.equals( "int" ) || type.equals( "integer" ) ) {
-			return IntegerCaster.cast( allowTruncate, object, fail );
-		}
-		if ( type.equals( "long" ) ) {
-			return LongCaster.cast( allowTruncate, object, fail );
-		}
-		if ( type.equals( "short" ) ) {
-			return ShortCaster.cast( allowTruncate, object, fail );
-		}
-		if ( type.equals( "float" ) ) {
-			return FloatCaster.cast( object, fail );
-		}
-		if ( type.equals( "array" ) ) {
-			return ArrayCaster.cast( object, fail );
-		}
-		// BL-640 - if we have a DateTime object provided, we use that reference rather than strip the date by using the timecaster
-		if ( object instanceof DateTime || type.equals( "datetime" ) || type.equals( "date" ) || type.equals( "timestamp" ) ) {
-			return DateTimeCaster.cast( object, fail, context );
-		}
-		if ( type.equals( "time" ) ) {
-			return TimeCaster.cast( object, fail );
-		}
-		if ( type.equals( "modifiablearray" ) ) {
-			return ModifiableArrayCaster.cast( object, fail );
-		}
-		if ( type.equals( "assignablearray" ) ) {
-			return AssignableArrayCaster.cast( object, fail );
-		}
-		if ( type.equals( "struct" ) ) {
-			return StructCaster.cast( object, fail );
-		}
-		if ( type.equals( "collection" ) ) {
-			return CollectionCaster.cast( object, fail );
-		}
-		if ( type.equals( "structloose" ) ) {
-			return StructCasterLoose.cast( object, fail );
-		}
-		if ( type.equals( "modifiablestruct" ) ) {
-			return ModifiableStructCaster.cast( object, fail );
-		}
-		if ( type.equals( "xml" ) ) {
-			return XMLCaster.cast( object, fail );
+					if ( fail ) {
+						throwCastException( type, object );
+					} else {
+						return null;
+					}
+				}
+				break;
 		}
 
-		if ( type.equals( "function" ) ) {
-			return FunctionCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "throwable" ) ) {
-			return ThrowableCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "key" ) ) {
-			return KeyCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "uuid" ) ) {
-			return UUIDCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "guid" ) ) {
-			return GUIDCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "variablename" ) ) {
-			return VariableNameCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "email" ) ) {
-			return EmailCaster.cast( object, fail );
-		}
-
-		if ( type.equals( "binary" ) ) {
-			return BinaryCaster.cast( object, fail );
-		}
-
-		if ( type.startsWith( "function:" ) && type.length() > 9 ) {
+		if ( type.getNameNoCase().startsWith( "function:" ) && type.getName().length() > 9 ) {
 			// strip off class name from "function:com.foo.Bar"
-			return FunctionCaster.cast( object, originalCaseType.substring( 9 ), fail );
-		}
-
-		if ( type.equals( "query" ) ) {
-			// No real "casting" to do, just return it if it is one
-			if ( object instanceof Query ) {
-				return object;
-			}
-			if ( fail ) {
-				throwCastException( type, object );
-			} else {
-				return null;
-			}
-		}
-
-		if ( type.equals( "file" ) ) {
-			// No real "casting" to do, just return it if it is one
-			if ( object instanceof ortus.boxlang.runtime.types.File ) {
-				return object;
-			}
-			if ( fail ) {
-				throwCastException( type, object );
-			} else {
-				return null;
-			}
-		}
-
-		if ( type.equals( "stream" ) && ! ( object instanceof IClassRunnable ) ) {
-			// No real "casting" to do, just return it if it is one
-			if ( object instanceof Stream ) {
-				return object;
-			}
-			if ( object instanceof IntStream is ) {
-				return is.boxed();
-			}
-			if ( object instanceof DoubleStream ds ) {
-				return ds.boxed();
-			}
-			if ( object instanceof LongStream ls ) {
-				return ls.boxed();
-			}
-
-			if ( fail ) {
-				throwCastException( type, object );
-			} else {
-				return null;
-			}
+			return FunctionCaster.cast( object, type.getName().substring( 9 ), fail );
 		}
 
 		// Handle class types. If it is an instance, we pass it
-		if ( InstanceOf.invoke( context, object, type ) ) {
+		if ( InstanceOf.invoke( context, object, type.getName() ) ) {
 			return object;
 		}
 		if ( fail ) {
-			throw new BoxCastException( String.format( "Could not cast object [%s] to type [%s]", object.getClass().getSimpleName(), type ) );
+			throw new BoxCastException(
+			    String.format( "Could not cast object [%s] to type [%s]", TypeUtil.getObjectName( object ), type.getName() ) );
 		} else {
 			return null;
 		}
 
 	}
 
-	private static void throwCastException( String type, Object object ) {
-		throw new BoxCastException( String.format( "Cannot cast %s, to a %s.", TypeUtil.getObjectName( object ), type ) );
+	private static void throwCastException( Key type, Object object ) {
+		throw new BoxCastException( String.format( "Cannot cast %s, to a %s.", TypeUtil.getObjectName( object ), type.getName() ) );
 	}
 
 	/**
@@ -416,7 +419,7 @@ public class GenericCaster implements IBoxCaster {
 	 *
 	 * @return The casted object
 	 */
-	private static Object castNativeArrayToNativeArray( IBoxContext context, Object object, String newType, boolean fail, Class<?> newTypeClass ) {
+	private static Object castNativeArrayToNativeArray( IBoxContext context, Object object, Key newType, boolean fail, Class<?> newTypeClass ) {
 		int		len		= java.lang.reflect.Array.getLength( object );
 		Object	result	= java.lang.reflect.Array.newInstance( newTypeClass, len );
 		for ( int i = len - 1; i >= 0; i-- ) {
@@ -439,9 +442,12 @@ public class GenericCaster implements IBoxCaster {
 	 * @param type The type to get the class for
 	 *
 	 * @return The class instance
+	 *
+	 * @deprecated Use {@link #getClassFromType(IBoxContext, Key, Boolean)} instead.
 	 */
+	@Deprecated
 	public static Class<?> getClassFromType( IBoxContext context, String type ) {
-		return getClassFromType( context, type, type, true );
+		return getClassFromType( context, Key.of( type ), true );
 	}
 
 	/**
@@ -451,9 +457,12 @@ public class GenericCaster implements IBoxCaster {
 	 * @param originalCaseType The original case of the type
 	 *
 	 * @return The class instance
+	 *
+	 * @deprecated Use {@link #getClassFromType(IBoxContext, Key, Boolean)} instead.
 	 */
+	@Deprecated
 	public static Class<?> getClassFromType( IBoxContext context, String type, String originalCaseType ) {
-		return getClassFromType( context, type, originalCaseType, true );
+		return getClassFromType( context, Key.of( originalCaseType ), true );
 	}
 
 	/**
@@ -464,88 +473,104 @@ public class GenericCaster implements IBoxCaster {
 	 * @param fail             True to throw exception when type is invalid
 	 *
 	 * @return The class instance
+	 *
+	 * @deprecated Use {@link #getClassFromType(IBoxContext, Key, Boolean)} instead.
 	 */
+	@Deprecated
 	public static Class<?> getClassFromType( IBoxContext context, String type, String originalCaseType, Boolean fail ) {
+		return getClassFromType( context, Key.of( originalCaseType ), fail );
+	}
 
-		// Check for primitive types first
-		if ( originalCaseType.equals( "byte" ) ) {
+	/**
+	 * Get the class from a type sent in that we can cast.
+	 * Uses Key for case-insensitive type matching.
+	 *
+	 * @param type The type key to get the class for
+	 * @param fail True to throw exception when type is invalid
+	 *
+	 * @return The class instance
+	 */
+	public static Class<?> getClassFromType( IBoxContext context, Key type, Boolean fail ) {
+
+		// Check for primitive types first (case-sensitive using original case)
+		if ( type.getName().equals( "byte" ) ) {
 			return byte.class;
 		}
-		if ( originalCaseType.equals( "char" ) ) {
+		if ( type.getName().equals( "char" ) ) {
 			return char.class;
 		}
-		if ( originalCaseType.equals( "short" ) ) {
+		if ( type.getName().equals( "short" ) ) {
 			return short.class;
 		}
-		if ( originalCaseType.equals( "int" ) ) {
+		if ( type.getName().equals( "int" ) ) {
 			return int.class;
 		}
-		if ( originalCaseType.equals( "long" ) ) {
+		if ( type.getName().equals( "long" ) ) {
 			return long.class;
 		}
-		if ( originalCaseType.equals( "float" ) ) {
+		if ( type.getName().equals( "float" ) ) {
 			return float.class;
 		}
-		if ( originalCaseType.equals( "double" ) ) {
+		if ( type.getName().equals( "double" ) ) {
 			return double.class;
 		}
-		if ( originalCaseType.equals( "boolean" ) ) {
+		if ( type.getName().equals( "boolean" ) ) {
 			return boolean.class;
 		}
 
-		// Check for boxed types
-		if ( type.equals( "bigdecimal" ) || type.equals( "java.math.bigdecimal" ) ) {
+		// Check for boxed types (case-insensitive via Key)
+		if ( type.equals( Key.bigdecimal ) || type.equals( Key.javaMathBigDecimal ) ) {
 			return BigDecimal.class;
 		}
-		if ( type.equals( "biginteger" ) || type.equals( "java.math.biginteger" ) ) {
+		if ( type.equals( Key.biginteger ) || type.equals( Key.javaMathBigInteger ) ) {
 			return java.math.BigInteger.class;
 		}
-		if ( type.equals( "boolean" ) || type.equals( "java.lang.boolean" ) ) {
+		if ( type.equals( Key._BOOLEAN ) || type.equals( Key.javaLangBoolean ) ) {
 			return Boolean.class;
 		}
-		if ( type.equals( "byte" ) || type.equals( "java.lang.byte" ) ) {
+		if ( type.equals( Key._byte ) || type.equals( Key.javaLangByte ) ) {
 			return Byte.class;
 		}
-		if ( type.equals( "char" ) || type.equals( "java.lang.char" ) ) {
+		if ( type.equals( Key._char ) || type.equals( Key.javaLangCharacter ) ) {
 			return Character.class;
 		}
-		if ( type.equals( "double" ) || type.equals( "java.lang.double" ) ) {
+		if ( type.equals( Key._DOUBLE ) || type.equals( Key.javaLangDouble ) ) {
 			return Double.class;
 		}
-		if ( type.equals( "float" ) || type.equals( "java.lang.float" ) ) {
+		if ( type.equals( Key._float ) || type.equals( Key.javaLangFloat ) ) {
 			return Float.class;
 		}
-		if ( type.equals( "instant" ) || type.equals( "java.time.instant" ) ) {
+		if ( type.equals( Key.instant ) || type.equals( Key.javaTimeInstant ) ) {
 			return java.time.Instant.class;
 		}
-		if ( type.equals( "int" ) || type.equals( "integer" ) || type.equals( "java.lang.integer" ) ) {
+		if ( type.equals( Key._int ) || type.equals( Key._INTEGER ) || type.equals( Key.javaLangInteger ) ) {
 			return Integer.class;
 		}
-		if ( type.equals( "LocalDate" ) || type.equals( "java.time.LocalDate" ) ) {
+		if ( type.equals( Key.localDate ) || type.equals( Key.javaTimeLocalDate ) ) {
 			return java.time.LocalDate.class;
 		}
-		if ( type.equals( "LocalDateTime" ) || type.equals( "java.time.LocalDateTime" ) ) {
+		if ( type.equals( Key.localDateTime ) || type.equals( Key.javaTimeLocalDateTime ) ) {
 			return java.time.LocalDateTime.class;
 		}
-		if ( type.equals( "LocalTime" ) || type.equals( "java.time.LocalTime" ) ) {
+		if ( type.equals( Key.localTime ) || type.equals( Key.javaTimeLocalTime ) ) {
 			return java.time.LocalTime.class;
 		}
-		if ( type.equals( "long" ) || type.equals( "java.lang.long" ) ) {
+		if ( type.equals( Key._LONG ) || type.equals( Key.javaLangLong ) ) {
 			return Long.class;
 		}
-		if ( type.equals( "short" ) || type.equals( "java.lang.short" ) ) {
+		if ( type.equals( Key._short ) || type.equals( Key.javaLangShort ) ) {
 			return Short.class;
 		}
-		if ( type.equals( "string" ) || type.equals( "java.lang.string" ) ) {
+		if ( type.equals( Key._STRING ) || type.equals( Key.javaLangString ) ) {
 			return String.class;
 		}
-		if ( type.equals( "object" ) || type.equals( "java.lang.object" ) ) {
+		if ( type.equals( Key.object ) || type.equals( Key.javaLangObject ) ) {
 			return Object.class;
 		}
 
 		// If we got here, then we have a full class name like java.lang.String
 		// Let's see if we can load it
-		Optional<DynamicObject> loadResult = BoxRuntime.getInstance().getClassLocator().safeLoad( context, originalCaseType, "java" );
+		Optional<DynamicObject> loadResult = BoxRuntime.getInstance().getClassLocator().safeLoad( context, type.getName(), "java" );
 		if ( loadResult.isPresent() ) {
 			return loadResult.get().getTargetClass();
 		}
@@ -555,7 +580,7 @@ public class GenericCaster implements IBoxCaster {
 		}
 
 		throw new BoxCastException(
-		    String.format( "Invalid cast type [%s]", originalCaseType )
+		    String.format( "Invalid cast type [%s]", type.getName() )
 		);
 	}
 }

@@ -27,6 +27,7 @@ public class BoxComparisonOperation extends BoxExpression {
 	private BoxExpression			left;
 	private BoxExpression			right;
 	private BoxComparisonOperator	operator;
+	private boolean					wasKeyword	= false;
 
 	/**
 	 * Comparision
@@ -75,6 +76,14 @@ public class BoxComparisonOperation extends BoxExpression {
 		this.operator = operator;
 	}
 
+	public boolean isWasKeyword() {
+		return wasKeyword;
+	}
+
+	public void setWasKeyword( boolean wasKeyword ) {
+		this.wasKeyword = wasKeyword;
+	}
+
 	@Override
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = super.toMap();
@@ -91,5 +100,10 @@ public class BoxComparisonOperation extends BoxExpression {
 
 	public BoxNode accept( ReplacingBoxVisitor v ) {
 		return v.visit( this );
+	}
+
+	@Override
+	public boolean returnsBoolean() {
+		return true;
 	}
 }

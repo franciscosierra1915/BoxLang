@@ -35,6 +35,7 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.FormatStyle;
 import java.time.temporal.TemporalAccessor;
 import java.time.temporal.TemporalQuery;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -90,22 +92,39 @@ public final class LocalizationUtil {
 	private static final String															LOCALE_PATTERN_FORMATTER_PREFIX		= "locale_pattern_formatter_";
 
 	/**
+	 * Pre-built DateTimeFormatter for ISO dates with 24-hour hours and an AM/PM marker
+	 * (e.g. "2024-04-02 21:01:00 PM"). Parses HOUR_OF_DAY (0-23) and AMPM_OF_DAY as
+	 * independent fields - Java's standard "HH a" pattern is rejected because HH and
+	 * 'a' are mutually exclusive in DateTimeFormatter. The corresponding
+	 * {@link CommonFormatter} (see {@link #getCommonFormatters()}) supplies a validator
+	 * that enforces consistency rules (e.g. hour > 12 with AM is rejected).
+	 */
+	private static final DateTimeFormatter												ISO_24_HOUR_MERIDIAN_FORMATTER		= new DateTimeFormatterBuilder()
+	    .parseCaseInsensitive()
+	    .appendPattern( "yyyy-MM-dd " )
+	    .appendValue( ChronoField.HOUR_OF_DAY, 2 )
+	    .appendPattern( ":mm:ss " )
+	    .appendPattern( "a" )
+	    .toFormatter( Locale.US );
+
+	/**
 	 * A wrapper class that combines a regex pattern with its corresponding DateTimeFormatter
 	 * for efficient pattern matching before attempting to parse.
 	 */
 	public static class CommonFormatter {
 
-		private final Pattern				pattern;
-		private final DateTimeFormatter		formatter;
-		private final String				description;
-		private final String				regexPattern;
-		private final String				datePattern;
-		private final TemporalQuery<?>[]	optimizedQueries;
+		private final Pattern										pattern;
+		private final DateTimeFormatter								formatter;
+		private final String										description;
+		private final String										regexPattern;
+		private final String										datePattern;
+		private final TemporalQuery<?>[]							optimizedQueries;
+		private final Function<TemporalAccessor, TemporalAccessor>	validator;
 
-		private static final Pattern		dateMatchPattern		= Pattern.compile( ".*[yMLdDjgEFwWu].*" );
-		private static final Pattern		timeMatchPattern		= Pattern.compile( ".*[HhKkmsSnA].*" );
-		private static final Pattern		timezoneMatchPattern	= Pattern.compile( ".*[zZVvXxOo].*" );
-		private static final Pattern		offsetMatchPattern		= Pattern.compile( ".*[XxZO].*" );
+		private static final Pattern								dateMatchPattern		= Pattern.compile( ".*[yMLdDjgEFwWu].*" );
+		private static final Pattern								timeMatchPattern		= Pattern.compile( ".*[HhKkmsSnA].*" );
+		private static final Pattern								timezoneMatchPattern	= Pattern.compile( ".*[zZVvXxOo].*" );
+		private static final Pattern								offsetMatchPattern		= Pattern.compile( ".*[XxZO].*" );
 
 		public CommonFormatter( String regexPattern, String datePattern, String description ) {
 			this.regexPattern		= regexPattern;
@@ -114,6 +133,44 @@ public final class LocalizationUtil {
 			this.formatter			= LocalizationUtil.getPatternFormatter( datePattern, Locale.US );
 			this.description		= description;
 			this.optimizedQueries	= determineOptimalTemporalQueries( datePattern );
+			this.validator			= null;
+		}
+
+		/**
+		 * Constructor for cases where a pre-built DateTimeFormatter is required,
+		 * e.g. when parseDefaulting is needed to supply missing temporal fields.
+		 *
+		 * @param regexPattern the regex used to identify matching input strings
+		 * @param datePattern  the date pattern string (used only for query determination)
+		 * @param formatter    the pre-built DateTimeFormatter to use for parsing
+		 * @param description  a human-readable description of this formatter
+		 */
+		public CommonFormatter( String regexPattern, String datePattern, DateTimeFormatter formatter, String description ) {
+			this( regexPattern, datePattern, formatter, description, null );
+		}
+
+		/**
+		 * Constructor for cases where a pre-built DateTimeFormatter is required
+		 * AND a post-parse validator is needed to enforce domain-specific rules
+		 * (e.g. consistent AM/PM with a 24-hour hour value).
+		 *
+		 * @param regexPattern the regex used to identify matching input strings
+		 * @param datePattern  the date pattern string (used only for query determination)
+		 * @param formatter    the pre-built DateTimeFormatter to use for parsing
+		 * @param description  a human-readable description of this formatter
+		 * @param validator    optional post-parse validator; returns a (possibly adjusted)
+		 *                     TemporalAccessor to use, or {@code null} to signal that this
+		 *                     formatter should be skipped (caller will try the next one).
+		 */
+		public CommonFormatter( String regexPattern, String datePattern, DateTimeFormatter formatter, String description,
+		    Function<TemporalAccessor, TemporalAccessor> validator ) {
+			this.regexPattern		= regexPattern;
+			this.datePattern		= datePattern;
+			this.pattern			= Pattern.compile( regexPattern );
+			this.formatter			= formatter;
+			this.description		= description;
+			this.optimizedQueries	= determineOptimalTemporalQueries( datePattern );
+			this.validator			= validator;
 		}
 
 		public boolean matches( String input ) {
@@ -138,6 +195,23 @@ public final class LocalizationUtil {
 
 		public TemporalQuery<?>[] getOptimizedQueries() {
 			return this.optimizedQueries;
+		}
+
+		/**
+		 * Runs the optional post-parse validator on a parsed {@link TemporalAccessor}.
+		 * <p>
+		 * The default implementation is a no-op (returns the input unchanged). Formatters
+		 * that need to enforce domain-specific rules on the parsed result (e.g. ensuring
+		 * that an AM/PM marker is consistent with a 24-hour hour value) supply a custom
+		 * {@code validator} via the constructor.
+		 *
+		 * @param parsed the TemporalAccessor returned by {@link DateTimeFormatter#parseBest}
+		 *
+		 * @return the (possibly adjusted) TemporalAccessor to use, or {@code null} to signal
+		 *         that this formatter should be skipped (the caller will try the next one).
+		 */
+		public TemporalAccessor validateAndAdjust( TemporalAccessor parsed ) {
+			return this.validator == null ? parsed : this.validator.apply( parsed );
 		}
 
 		/**
@@ -440,6 +514,10 @@ public final class LocalizationUtil {
 
 		// Let the lib run it's course
 		try {
+			if ( requestedLocale.length() == 2 ) {
+				// treat a 2 letter locale as a language code
+				requestedLocale = requestedLocale.toLowerCase();
+			}
 			oLocale = LocaleUtils.toLocale( requestedLocale );
 			// Make sure it's a valid locale for this machine or return null
 			return LocaleUtils.isAvailableLocale( oLocale ) ? oLocale : null;
@@ -825,21 +903,20 @@ public final class LocalizationUtil {
 			// Med DateTime specific format with double digit day, single digit hour (e.g., Nov-05-2025 8:43am)
 			add( Map.of(
 				"regexPattern",
-				"^[A-Za-z]{3}-\\d{1,2}-\\d{4}\\s+\\d{1}:\\d{2}\\s*[APap][Mm]$",
-				"datePattern", "MMM-d-yyyy h:mm[ ]a",
+				"^[A-Za-z]{3}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{1}:\\d{2}\\s*[APap][Mm]$",
+				"datePattern", "MMM<-/>d<-/>yyyy h:mm[ ]a",
 				"description", "Month-DD-YYYY H:MM AM/PM format"
 			) );
 
 			// Med DateTime specific format with double digit day, and 24 hour time with optional seconds
 			add( Map.of(
 				"regexPattern",
-				"^[A-Za-z]{3}-\\d{1,2}-\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
-				"datePattern", "MMM-d-yyyy HH:mm[:ss]",
+				"^[A-Za-z]{3}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
+				"datePattern", "MMM<-/>d<-/>yyyy HH:mm[:ss]",
 				"description", "Month-DD-YYYY HH:MM[:SS] format"
 			) );
 
 			// ========== Localized Date/Time Formats ==========
-
 			// Full DateTime with full day name (e.g., Tuesday, 02 Apr 2024 21:01:00 CEST)
 			add( Map.of(
 				"regexPattern",
@@ -869,16 +946,16 @@ public final class LocalizationUtil {
 			// Medium DateTime with single digit day (e.g., 2-Apr-2024 21:01:00)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{1,2}-[A-Za-z]{3}-\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
-				"datePattern", "d-MMM-yyyy HH:mm[:ss]",
+				"^\\d{1,2}[-/][A-Za-z]{3}[-/]\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
+				"datePattern", "d<-/>MMM<-/>yyyy HH:mm[:ss]",
 				"description", "Single digit day-month-year time"
 			) );
 
 			// Medium DateTime with double digit day (e.g., 02-Apr-2024 21:01:00)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{1,2}-[A-Za-z]{3}-\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
-				"datePattern", "d-MMM-yyyy HH:mm[:ss]",
+				"^\\d{1,2}[-/][A-Za-z]{3}[-/]\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
+				"datePattern", "d<-/>MMM<-/>yyyy HH:mm[:ss]",
 				"description", "Double digit day-month-year time"
 			) );
 
@@ -984,29 +1061,56 @@ public final class LocalizationUtil {
 				"Month double day year time no seconds with optional timezone"
 			) );
 
+			// ========== Weird ISO-ish formats that are still common in the wild ========== //
+
 			// ========== US Format Date/Time ==========
 
-			// US Short DateTime with AM/PM and seconds (e.g., 02/04/2024 04:01:00 PM)
+			// US Short DateTime with AM/PM and seconds (e.g., 02/04/2024 04:01:00 PM, 03/28/2025 04:32:26 PM)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{2}/\\d{1,2}/\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?\\s+[APap][Mm]$",
-				"datePattern", "MM/d/yyyy hh:mm[:ss] a",
-				"description", "US date MM/dd/yyyy with time and AM/PM"
+				"^\\d{2}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}\\s+[APap][Mm]$",
+				"datePattern", "MM<-/>dd<-/>yyyy hh:mm:ss a",
+				"description", "US date MM/dd/yyyy or MM-dd-yyyy with time and AM/PM with seconds"
 			) );
 
-			// US Short DateTime 24-hour with optional seconds (e.g., 02/04/2024 21:01:00)
+			// US Short DateTime with AM/PM no seconds (e.g., 02/04/2024 04:01 PM)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{2}/\\d{1,2}/\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
-				"datePattern", "MM/d/yyyy HH:mm[:ss]",
-				"description", "US date MM/dd/yyyy with 24-hour time"
+				"^\\d{2}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{2}:\\d{2}\\s+[APap][Mm]$",
+				"datePattern", "MM<-/>dd<-/>yyyy hh:mm a",
+				"description", "US date MM/dd/yyyy or MM-dd-yyyy with time and AM/PM no seconds"
+			) );
+
+			// US Short DateTime 24-hour with seconds (e.g., 02/04/2024 21:01:00, 01-31-2026 23:59:59, 7/17/2025 00:00:00.000)
+			add( Map.of(
+				"regexPattern",
+				"^\\d{1,2}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?$",
+				"datePattern", "M<-/>d<-/>yyyy HH:mm:ss[.SSS]",
+				"description", "US date M/d/yyyy or MM-dd-yyyy with 24-hour time with seconds and optional milliseconds"
+			) );
+
+			// US Short DateTime 24-hour no seconds (e.g., 02/04/2024 21:01, 7/17/2025 00:00)
+			add( Map.of(
+				"regexPattern",
+				"^\\d{1,2}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{2}:\\d{2}$",
+				"datePattern", "M<-/>d<-/>yyyy HH:mm",
+				"description", "US date M/d/yyyy or MM-dd-yyyy with 24-hour time no seconds"
+			) );
+
+
+			// US Short DateTime 24-hour 24 hour time with meridian (e.g., 2/4/2024 12:00:00 AM )
+			add( Map.of(
+				"regexPattern", 
+				"^\\d{1,2}[-/]\\d{1,2}[-/]\\d{4}\\s+\\d{1,2}:\\d{2}:\\d{2}\\s+[APap][Mm]$",
+				"datePattern", "M<-/>d<-/>yyyy h:mm:ss a",
+				"description", "US date M/d/yyyy or MM-dd-yyyy with 12-hour time and AM/PM with seconds"
 			) );
 
 
 			// US Short DateTime with AM/PM no seconds (e.g., 02/04/2024 04:01 PM)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{1,2}/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
+				"^(1[0-2]|[1-9])/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
 				"datePattern", "M/d/yyyy h:mm a",
 				"description", "US date MM/dd/yyyy with time AM/PM no seconds"
 			) );
@@ -1023,9 +1127,41 @@ public final class LocalizationUtil {
 			// US Short DateTime with no seconds and no meridian (e.g., 11/21/2025 1:05)
 			add( Map.of(
 				"regexPattern",
-				"^\\d{1,2}/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}$",
+				"^(1[0-2]|[1-9])/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}$",
 				"datePattern", "M/d/yyyy H:mm",
 				"description", "US date MM/dd/yyyy with time no seconds"
+			) );
+
+			// US date format with month validation (1-12) and flexible delimiters
+			// This must come before the ambiguous European pattern to ensure US dates are parsed correctly
+			add( Map.of(
+				"regexPattern", "^(1[0-2]|0?[1-9])[./-]\\d{1,2}[./-]\\d{4}$",
+				"datePattern", "M<-/.>d<-/.>yyyy",
+				"description", "US month-day-year format with month validation (1-12)"
+			) );
+
+			// European slash format date (e.g., 02/04/2024)
+			add( Map.of(
+				"regexPattern",
+				"^\\d{1,2}/\\d{1,2}/\\d{4}$",
+				"datePattern", "d/M/yyyy",
+				"description", "European DD/MM/YYYY format"
+			) );
+
+			// European dot format date (e.g., 02.04.2024)
+			add( Map.of(
+				"regexPattern",
+				"^\\d{1,2}\\.\\d{1,2}\\.\\d{4}$",
+				"datePattern", "d.M.yyyy",
+				"description", "European DD.MM.YYYY format"
+			) );
+
+			// European slash format datetime (e.g., 02/04/2024 21:01:00)
+			add( Map.of(
+				"regexPattern",
+				"^\\d{1,2}/\\d{1,2}/\\d{4}\\s+\\d{2}:\\d{2}(?::\\d{2})?$",
+				"datePattern", "d/M/yyyy HH:mm[:ss]",
+				"description", "European DD/MM/YYYY with time"
 			) );
 
 			// European dot format datetime (e.g., 02.04.2024 21:01:00)
@@ -1096,60 +1232,18 @@ public final class LocalizationUtil {
 
 			// ========== US Localized Date Formats ==========
 
-			// Long Date with space separators (e.g., Apr 02 2024)
+			// Long Date with flexible separators (e.g., Apr 02 2024, Apr-02-2024, Apr/02/2024, Apr.02.2024)
 			add( Map.of(
-				"regexPattern", "^[A-Za-z]{3}\\s+\\d{1,2}\\s+\\d{4}$",
-				"datePattern", "MMM d yyyy",
-				"description", "Month day year with spaces"
+				"regexPattern", "^[A-Za-z]{3}[ ./-]\\d{1,2}[ ./-]\\d{4}$",
+				"datePattern", "MMM< ./->d< ./->yyyy",
+				"description", "Month day year with flexible separators"
 			) );
 
-			// Long Date with dash separators (e.g., Apr-02-2024)
+			// Short Date with flexible separators (e.g., 04 02 2024, 04-02-2024, 04/02/2024, 04.02.2024)
 			add( Map.of(
-				"regexPattern", "^[A-Za-z]{3}-\\d{1,2}-\\d{4}$",
-				"datePattern", "MMM-d-yyyy",
-				"description", "Month-day-year with dashes"
-			) );
-
-			// Long Date with slash separators (e.g., Apr/02/2024)
-			add( Map.of(
-				"regexPattern", "^[A-Za-z]{3}/\\d{1,2}/\\d{4}$",
-				"datePattern", "MMM/d/yyyy",
-				"description", "Month/day/year with slashes"
-			) );
-
-			// Long Date with dot separators (e.g., Apr.02.2024)
-			add( Map.of(
-				"regexPattern", "^[A-Za-z]{3}\\.\\d{2}\\.\\d{4}$",
-				"datePattern", "MMM.dd.yyyy",
-				"description", "Month.day.year with dots"
-			) );
-
-			// Short Date with space separators (e.g., 04 02 2024)
-			add( Map.of(
-				"regexPattern", "^\\d{2}\\s\\d{1,2}\\s\\d{4}$",
-				"datePattern", "MM d yyyy",
-				"description", "MM dd yyyy with spaces"
-			) );
-
-			// Short Date with dash separators (e.g., 04-02-2024)
-			add( Map.of(
-				"regexPattern", "^\\d{2}-\\d{1,2}-\\d{4}$",
-				"datePattern", "MM-d-yyyy",
-				"description", "MM-dd-yyyy with dashes"
-			) );
-
-			// Short Date with slash separators (e.g., 04/02/2024)
-			add( Map.of(
-				"regexPattern", "^\\d{2}/\\d{1,2}/\\d{4}$",
-				"datePattern", "MM/d/yyyy",
-				"description", "MM/dd/yyyy with slashes"
-			) );
-
-			// Short Date with dot separators (e.g., 04.02.2024)
-			add( Map.of(
-				"regexPattern", "^\\d{2}\\.\\d{2}\\.\\d{4}$",
-				"datePattern", "MM.dd.yyyy",
-				"description", "MM.dd.yyyy with dots"
+				"regexPattern", "^(1[0-2]|0[1-9])[ ./-]\\d{1,2}[ ./-]\\d{4}$",
+				"datePattern", "MM< ./->d< ./->yyyy",
+				"description", "MM dd yyyy with flexible separators"
 			) );
 
 			// ========== European and International Date Formats ==========
@@ -1179,7 +1273,7 @@ public final class LocalizationUtil {
 			// Medium Date with flexible separators (e.g., 02-Apr-2024, 02/Apr/2024, 02.Apr.2024)
 			add( Map.of(
 				"regexPattern", "^\\d{1,2}[./-][A-Za-z]{3}[./-]\\d{4}$",
-				"datePattern", "d[-/.]MMM[-/.]yyyy",
+				"datePattern", "d<-/.>MMM<-/.>yyyy",
 				"description", "Day-month-year with flexible separators"
 			) );
 
@@ -1197,17 +1291,19 @@ public final class LocalizationUtil {
 				"description", "Full month day, year with optional commas"
 			) );
 
-			// European day-first with flexible separators (e.g., 02-04-2024, 02/04/2024, 02.04.2024)
+			// European day-first with flexible separators (e.g., 02-04-2024, 02.04.2024)
+			// Validates day 1-31 to prevent ambiguity with US month-first format
+			// Note: Does NOT support slash (/) to avoid confusion with US M/d/yyyy format
 			add( Map.of(
-				"regexPattern", "^\\d{1,2}[ ./-]\\d{1,2}[ ./-]\\d{4}$",
-				"datePattern", "d[ /-.]M[ /-.]yyyy",
-				"description", "European day-first with flexible separators"
+				"regexPattern", "^(3[01]|[12][0-9]|0?[1-9])[ .-](1[0-2]|0?[1-9])[ .-]\\d{4}$",
+				"datePattern", "d< -.>M< -.>yyyy",
+				"description", "European day-first with space/dash/dot separators"
 			) );
 
 			// ISO date with flexible separators (e.g., 2024-04-02, 2024/04/02, 2024.04.02)
 			add( Map.of(
 				"regexPattern", "^\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}$",
-				"datePattern", "yyyy[-/.]M[-/.]d",
+				"datePattern", "yyyy<-/.>M<-/.>d",
 				"description", "ISO year-month-day with flexible separators"
 			) );
 
@@ -1282,24 +1378,24 @@ public final class LocalizationUtil {
 			// Pattern for "Mar 22 2025 05:21 PM" - medium format without comma and seconds
 			add( Map.of(
 				"regexPattern",
-				"^[A-Za-z]{3}\\s+\\d{1,2}\\s+\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
-				"datePattern", "MMM d yyyy h:mm a",
+				"^[A-Za-z]{3}\\s+\\d{1,2}\\s+\\d{4}\\s+\\d{1,2}:\\d{2}\\s*[APap][Mm]$",
+				"datePattern", "MMM d yyyy h:mm[ ]a",
 				"description",
-				"Medium format without comma no seconds with AM/PM"
+				"Medium format without comma no seconds with AM/PM (optional space)"
 			) );
 
-			// Pattern for "March 22 2025 5:21 PM" - full month name without comma
+			// Pattern for "March 22 2025 5:21 PM" - full month name without comma  
 			add( Map.of(
 				"regexPattern",
-				"^[A-Za-z]{3,}\\s+\\d{1,2}\\s+\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
-				"datePattern", "MMMM d yyyy h:mm a",
+				"^[A-Za-z]{3,}\\s+\\d{1,2}\\s+\\d{4}\\s+\\d{1,2}:\\d{2}\\s*[APap][Mm]$",
+				"datePattern", "MMMM d yyyy h:mm[ ]a",
 				"description",
-				"Full month name without comma no seconds with AM/PM"
+				"Full month name without comma no seconds with AM/PM (optional space)"
 			) );
 
 			// Pattern for single digit month/day formats like "1/1/2024"
 			add( Map.of(
-				"regexPattern", "^\\d{1,2}/\\d{1,2}/\\d{4}$",
+				"regexPattern", "^(1[0-2]|[1-9])/\\d{1,2}/\\d{4}$",
 				"datePattern", "M/d/yyyy",
 				"description", "US date with single digit month/day (1/1/2024)"
 			) );
@@ -1424,7 +1520,7 @@ public final class LocalizationUtil {
 			// Pattern for slash date with lowercase pm "7/20/2025 1:00 pm"
 			add( Map.of(
 				"regexPattern",
-				"^\\d{1,2}/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
+				"^(1[0-2]|[1-9])/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}\\s+[APap][Mm]$",
 				"datePattern", "M/d/yyyy h:mm a",
 				"description", "US date format with lowercase am/pm"
 			) );
@@ -1474,7 +1570,86 @@ public final class LocalizationUtil {
 			) );
 		}
 
+		// Month/year only (MM/yyyy or MM-yyyy) - requires parseDefaulting to supply day=1.
+		// Must be added after the loop since Map<String,String> cannot carry a pre-built formatter.
+		DateTimeFormatter mmYyyyFormatter = new DateTimeFormatterBuilder()
+		    .parseCaseInsensitive()
+		    .appendPattern( "MM" )
+		    .optionalStart().appendLiteral( '/' ).optionalEnd()
+		    .optionalStart().appendLiteral( '-' ).optionalEnd()
+		    .appendPattern( "yyyy" )
+		    .parseDefaulting( ChronoField.DAY_OF_MONTH, 1 )
+		    .toFormatter( Locale.US );
+		formatters.add( new CommonFormatter(
+		    "^(1[0-2]|0?[1-9])[/-]\\d{4}$",
+		    "MM<-/>yyyy",
+		    mmYyyyFormatter,
+		    "Month/year format with first-of-month assumption (12/2025 or 12-2025)"
+		) );
+
+		// ISO date with 24-hour hours and AM/PM marker (e.g. "2024-04-02 21:01:00 PM").
+		// Uses the pre-built ISO_24_HOUR_MERIDIAN_FORMATTER, which parses HOUR_OF_DAY (0-23)
+		// and AMPM_OF_DAY as independent fields. Hours 13-23 are matched by the regex; hours
+		// 1-12 are already handled by the 12-hour "yyyy-MM-dd h:mm:ss a" pattern earlier in
+		// the list. A validator enforces consistency: hours > 12 with AM are rejected, and
+		// hours 12 with AM are normalized to midnight (hour 0).
+		formatters.add( new CommonFormatter(
+		    "^\\d{4}-\\d{2}-\\d{2}\\s+(2[0-3]|1[3-9]):\\d{2}:\\d{2}\\s+[APap][Mm]$",
+		    "yyyy-MM-dd HH:mm:ss a",
+		    ISO_24_HOUR_MERIDIAN_FORMATTER,
+		    "ISO date with 24-hour hours (13-23) and AM/PM marker (validated)",
+		    LocalizationUtil::validateIsoWith24HourAndMeridian
+		) );
+
 		return formatters;
+	}
+
+	/**
+	 * Validator for ISO date strings with 24-hour hours and an AM/PM marker.
+	 * <p>
+	 * The parser produces a {@link TemporalAccessor} with both {@link ChronoField#HOUR_OF_DAY}
+	 * (0-23) and {@link ChronoField#AMPM_OF_DAY} (0=AM, 1=PM) populated. Rules enforced:
+	 * <ul>
+	 * <li>Hour 13-23 with AM: <b>reject</b> (return {@code null} to fall through to other formatters).</li>
+	 * <li>Hour 13-23 with PM: accept; rebuild as a {@link LocalDateTime} preserving the hour value.</li>
+	 * <li>Hour 12 with AM: accept and normalize to hour 0 (midnight).</li>
+	 * <li>Hour 12 with PM: accept; hour stays at 12 (noon).</li>
+	 * <li>Hour 0-11 with AM/PM: accept; hour value is preserved as-is (the value already matches the period).</li>
+	 * </ul>
+	 *
+	 * @param parsed the TemporalAccessor produced by the custom ISO 24-hour + meridian formatter
+	 *
+	 * @return a rebuilt {@link LocalDateTime} on success, or {@code null} if the input is rejected
+	 */
+	private static TemporalAccessor validateIsoWith24HourAndMeridian( TemporalAccessor parsed ) {
+		if ( !parsed.isSupported( ChronoField.HOUR_OF_DAY ) || !parsed.isSupported( ChronoField.AMPM_OF_DAY ) ) {
+			return null;
+		}
+		int	hourOfDay	= parsed.get( ChronoField.HOUR_OF_DAY );
+		int	amPm		= parsed.get( ChronoField.AMPM_OF_DAY );
+
+		// Reject hour > 12 with AM (inconsistent) - caller will try the next formatter.
+		if ( hourOfDay > 12 && amPm == 0 ) {
+			return null;
+		}
+
+		// Normalize hour 12 + AM to midnight (hour 0). Hour 12 + PM stays as 12 (noon).
+		// Hours 0-23 with PM are kept as-is; hours 0-12 with AM are kept as-is.
+		int finalHour;
+		if ( hourOfDay == 12 && amPm == 0 ) {
+			finalHour = 0;
+		} else {
+			finalHour = hourOfDay;
+		}
+
+		int	year	= parsed.get( ChronoField.YEAR );
+		int	month	= parsed.get( ChronoField.MONTH_OF_YEAR );
+		int	day		= parsed.get( ChronoField.DAY_OF_MONTH );
+		int	minute	= parsed.get( ChronoField.MINUTE_OF_HOUR );
+		int	second	= parsed.get( ChronoField.SECOND_OF_MINUTE );
+		int	nano	= parsed.isSupported( ChronoField.NANO_OF_SECOND ) ? parsed.get( ChronoField.NANO_OF_SECOND ) : 0;
+
+		return LocalDateTime.of( year, month, day, finalHour, minute, second, nano );
 	}
 
 	/**
@@ -1521,6 +1696,15 @@ public final class LocalizationUtil {
 					    dateTime,
 					    formatter.getOptimizedQueries()
 					);
+
+					// Run the optional post-parse validator. A formatter may return null
+					// (reject) or a different TemporalAccessor (e.g. a normalized LocalDateTime).
+					date = formatter.validateAndAdjust( date );
+					if ( date == null ) {
+						loggingService.getRuntimeLogger().trace(
+						    "Validation rejected date time for pattern [" + formatter.getDescription() + "]: " + dateTime );
+						continue;
+					}
 
 					// Parse timezone if not provided and date does not already contain timezone info
 					if ( timezone == null && ( ! ( date instanceof ZonedDateTime ) && ! ( date instanceof OffsetDateTime ) ) ) {
@@ -1935,8 +2119,97 @@ public final class LocalizationUtil {
 	}
 
 	/**
+	 * Builds a DateTimeFormatter programmatically when the pattern contains optional delimiter syntax like <-/.>.
+	 * This method parses patterns and creates a DateTimeFormatterBuilder that can match multiple separator types.
+	 * 
+	 * Pattern syntax support:
+	 * - `<-/.>` means match any of: dash, slash, or dot
+	 * - `< /-.>` means match any of: space, slash, dash, or dot
+	 * - Standard optionals like `[:ss]` or `[.SSS]` are still supported via appendPattern
+	 * 
+	 * Example: "yyyy<-/.>MM<-/.>dd" will match "2024-01-31", "2024/01/31", or "2024.01.31"
+	 *
+	 * @param pattern the pattern string possibly containing delimiter alternatives in angle brackets
+	 * @param locale  the locale to use for the formatter
+	 * 
+	 * @return the programmatically built DateTimeFormatter
+	 */
+	private static DateTimeFormatter buildFlexibleDelimiterFormatter( String pattern, Locale locale ) {
+		DateTimeFormatterBuilder	builder	= new DateTimeFormatterBuilder().parseStrict().parseCaseInsensitive();
+
+		int							i		= 0;
+		while ( i < pattern.length() ) {
+			char c = pattern.charAt( i );
+
+			// Check if this is a flexible delimiter group like <-/.> or < /-.>
+			if ( c == '<' ) {
+				// Find the closing angle bracket
+				int closeIdx = pattern.indexOf( '>', i );
+				if ( closeIdx > i + 1 ) {
+					// Extract the delimiters inside the angle brackets
+					String delimiters = pattern.substring( i + 1, closeIdx );
+
+					// Add optional alternatives for each delimiter
+					for ( int j = 0; j < delimiters.length(); j++ ) {
+						char delimiter = delimiters.charAt( j );
+						builder.optionalStart().appendLiteral( delimiter ).optionalEnd();
+					}
+
+					i = closeIdx + 1;
+					continue;
+				}
+			}
+
+			// Check if this is a date pattern segment
+			if ( Character.isLetter( c ) ) {
+				// Find the end of this pattern segment
+				int start = i;
+				while ( i < pattern.length() && pattern.charAt( i ) == c ) {
+					i++;
+				}
+				String segment = pattern.substring( start, i );
+				builder.appendPattern( segment );
+			} else if ( c == '\'' ) {
+				// Handle literal text in quotes
+				int start = i;
+				i++; // skip opening quote
+				while ( i < pattern.length() && pattern.charAt( i ) != '\'' ) {
+					i++;
+				}
+				if ( i < pattern.length() ) {
+					i++; // skip closing quote
+				}
+				String literal = pattern.substring( start, i );
+				builder.appendPattern( literal );
+			} else if ( c == '[' ) {
+				// This is a standard optional like [:ss] or [.SSS]
+				int	start		= i;
+				int	closeIdx	= pattern.indexOf( ']', i );
+				if ( closeIdx > i ) {
+					String optional = pattern.substring( start, closeIdx + 1 );
+					builder.appendPattern( optional );
+					i = closeIdx + 1;
+				} else {
+					// No closing bracket, treat as literal
+					builder.appendLiteral( c );
+					i++;
+				}
+			} else {
+				// Regular literal character
+				builder.appendLiteral( c );
+				i++;
+			}
+		}
+
+		return builder.toFormatter( locale );
+	}
+
+	/**
 	 * Gets a cached DateTimeFormatter for the specified pattern using the default locale.
 	 * Uses memory-sensitive caching with SoftReference to allow garbage collection under memory pressure.
+	 * 
+	 * Supports flexible delimiter syntax: patterns like "yyyy<-/.>MM<-/.>dd" will match dates with
+	 * dash, slash, or dot separators.
 	 *
 	 * @param pattern the date/time pattern string
 	 * 
@@ -1944,13 +2217,22 @@ public final class LocalizationUtil {
 	 */
 	public static DateTimeFormatter getPatternFormatter( String pattern ) {
 		String cacheKey = PATTERN_FORMATTER_PREFIX + pattern;
-		return getOrCreateFormatter( cacheKey, () -> newLenientDateTimeFormatterBuilder().parseCaseInsensitive().appendPattern( pattern ).toFormatter()
-		);
+		return getOrCreateFormatter( cacheKey, () -> {
+			// Check if pattern contains flexible delimiter syntax in angle brackets
+			if ( pattern.contains( "<" ) ) {
+				return buildFlexibleDelimiterFormatter( pattern, Locale.getDefault() );
+			} else {
+				return newLenientDateTimeFormatterBuilder().parseCaseInsensitive().appendPattern( pattern ).toFormatter();
+			}
+		} );
 	}
 
 	/**
 	 * Gets a cached DateTimeFormatter for the specified pattern and locale.
 	 * Uses memory-sensitive caching with SoftReference to allow garbage collection under memory pressure.
+	 * 
+	 * Supports flexible delimiter syntax: patterns like "yyyy<-/.>MM<-/.>dd" will match dates with
+	 * dash, slash, or dot separators.
 	 *
 	 * @param pattern the date/time pattern string
 	 * @param locale  the locale to use for the formatter
@@ -1958,9 +2240,15 @@ public final class LocalizationUtil {
 	 * @return the cached or newly created DateTimeFormatter
 	 */
 	public static DateTimeFormatter getPatternFormatter( String pattern, Locale locale ) {
-		String cacheKey = LOCALE_PATTERN_FORMATTER_PREFIX + pattern + "_" + locale.toString();
-		return getOrCreateFormatter( cacheKey, () -> newLenientDateTimeFormatterBuilder().parseCaseInsensitive().appendPattern( pattern ).toFormatter( locale )
-		);
+		String cacheKey = PATTERN_FORMATTER_PREFIX + pattern + "_" + locale.toString();
+		return getOrCreateFormatter( cacheKey, () -> {
+			// Check if pattern contains flexible delimiter syntax in angle brackets
+			if ( pattern.contains( "<" ) ) {
+				return buildFlexibleDelimiterFormatter( pattern, locale );
+			} else {
+				return newLenientDateTimeFormatterBuilder().parseCaseInsensitive().appendPattern( pattern ).toFormatter( locale );
+			}
+		} );
 	}
 
 	/**

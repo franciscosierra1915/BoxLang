@@ -21,13 +21,39 @@ import java.math.BigDecimal;
 
 import ortus.boxlang.runtime.dynamic.casters.BigDecimalCaster;
 import ortus.boxlang.runtime.dynamic.casters.NumberCaster;
+import ortus.boxlang.runtime.dynamic.casters.SetCaster;
+import ortus.boxlang.runtime.types.BoxSet;
 import ortus.boxlang.runtime.types.util.MathUtil;
 
 /**
- * Performs Math Power for BoxLang
+ * Performs Math Power, with overloads for set symmetric difference when both operands are {@link BoxSet}.
  * {@code a = 2 ^ 3}
  */
 public class Power implements IOperator {
+
+	/**
+	 * Generic dispatch: returns a {@link BoxSet} (symmetric difference) when either operand is a
+	 * {@link BoxSet} and the other coerces to one; otherwise delegates to numeric exponentiation.
+	 *
+	 * @param left  The left operand
+	 * @param right The right operand
+	 *
+	 * @return The power (Number) for numeric operands, or a new {@link BoxSet} for set operands.
+	 */
+	public static Object invoke( Object left, Object right ) {
+		if ( left instanceof BoxSet bsl ) {
+			var rs = SetCaster.attemptLoose( right );
+			if ( rs.wasSuccessful() ) {
+				return bsl.symmetricDifference( rs.get() );
+			}
+		} else if ( right instanceof BoxSet bsr ) {
+			var ls = SetCaster.attemptLoose( left );
+			if ( ls.wasSuccessful() ) {
+				return ls.get().symmetricDifference( bsr );
+			}
+		}
+		return invoke( NumberCaster.cast( left ), NumberCaster.cast( right ) );
+	}
 
 	/**
 	 * @param left  The left operand
@@ -35,33 +61,23 @@ public class Power implements IOperator {
 	 *
 	 * @return The the result
 	 */
-	public static Number invoke( Object left, Object right ) {
-
-		// First turn the operands into numbers
-		Number	nLeft		= NumberCaster.cast( left );
-		Number	nRight		= NumberCaster.cast( right );
-
-		// Track if either operand is a BigDecimal so we don't have to cast them again
+	public static Number invoke( Number left, Number right ) {
 		boolean	leftIsBD	= false;
 		boolean	rightIsBD	= false;
 
-		// If we're using high precision math, or either operand is already a BigDecimal, we'll use BigDecimal math
-		if ( MathUtil.isHighPrecisionMath() || ( leftIsBD = ( nLeft instanceof BigDecimal ) ) || ( rightIsBD = ( nRight instanceof BigDecimal ) ) ) {
-			BigDecimal	bdLeft	= leftIsBD ? ( BigDecimal ) nLeft : BigDecimalCaster.cast( nLeft );
-			BigDecimal	bdRight	= rightIsBD ? ( BigDecimal ) nRight : BigDecimalCaster.cast( nRight );
-			// Check if the exponent is an integer
+		if ( MathUtil.isHighPrecisionMath() || ( leftIsBD = ( left instanceof BigDecimal ) ) || ( rightIsBD = ( right instanceof BigDecimal ) ) ) {
+			BigDecimal	bdLeft	= leftIsBD ? ( BigDecimal ) left : BigDecimalCaster.cast( left );
+			BigDecimal	bdRight	= rightIsBD ? ( BigDecimal ) right : BigDecimalCaster.cast( right );
 			if ( bdRight.stripTrailingZeros().scale() <= 0 ) {
 				return bdLeft.pow( bdRight.intValueExact(), MathUtil.getMathContext() );
 			} else {
-				// For fractional exponents, use exp(log(base) * exponent)
 				BigDecimal	logBase	= new BigDecimal( Math.log( bdLeft.doubleValue() ), MathUtil.getMathContext() );
 				BigDecimal	result	= new BigDecimal( Math.exp( logBase.multiply( bdRight ).doubleValue() ), MathUtil.getMathContext() );
 				return result;
 			}
 		}
 
-		// Otherwise, we can just multiply them
-		return Math.pow( nLeft.doubleValue(), nRight.doubleValue() );
+		return Math.pow( left.doubleValue(), right.doubleValue() );
 	}
 
 }

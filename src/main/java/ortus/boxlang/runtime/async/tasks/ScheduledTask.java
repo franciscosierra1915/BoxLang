@@ -475,8 +475,15 @@ public class ScheduledTask implements Runnable {
 			// Execution by type
 			switch ( task ) {
 				case DynamicObject castedTask -> {
-					this.stats.put( "lastResult", Optional
-					    .ofNullable( castedTask.invoke( this.taskContext, method ) ) );
+					Object	targetInstance	= castedTask.getTargetInstance();
+					Object	result;
+					// BoxLang classes/objects dispatch UDFs dynamically (this scope), not via JVM reflection
+					if ( targetInstance instanceof IReferenceable referenceable ) {
+						result = referenceable.dereferenceAndInvoke( this.taskContext, Key.of( method ), DynamicObject.EMPTY_ARGS, false );
+					} else {
+						result = castedTask.invoke( this.taskContext, method );
+					}
+					this.stats.put( "lastResult", Optional.ofNullable( result ) );
 				}
 				case Callable<?> castedTask -> {
 					this.stats.put( "lastResult", Optional.ofNullable( castedTask.call() ) );
@@ -635,6 +642,13 @@ public class ScheduledTask implements Runnable {
 			}
 		}
 
+		// If this is an interval-based (every()) task with an explicit daily start time and no
+		// initial delay was set some other way, align the first execution to the next period
+		// boundary counted from that start time instead of firing immediately on registration.
+		if ( this.period > 0 && this.initialDelay == 0 && this.startTime.length() > 0 ) {
+			calculateStartTimeAlignedDelay();
+		}
+
 		// Log it
 		debugLog(
 		    "start",
@@ -764,7 +778,10 @@ public class ScheduledTask implements Runnable {
 	 * @return The ScheduledTask instance
 	 */
 	public ScheduledTask call( DynamicObject task, String method ) {
-		return call( task, method );
+		debugLog( "call" );
+		setTask( task );
+		setMethod( method == null || method.isBlank() ? "run" : method );
+		return this;
 	}
 
 	/**
@@ -1089,6 +1106,25 @@ public class ScheduledTask implements Runnable {
 	}
 
 	/**
+	 * Alias with string time unit for BoxLang
+	 *
+	 * @param delay      The delay that will be used before executing the task
+	 * @param timeUnit   The time unit to use, available units are: days, hours,
+	 *                   microseconds, milliseconds, minutes, nanoseconds, and
+	 *                   seconds. The default is milliseconds
+	 * @param overwrites Boolean to overwrite delay and delayTimeUnit even if value is already set, this is helpful if the delay is set later in the chain when creating the task - defaults to false
+	 *
+	 * @return The ScheduledTask instance
+	 */
+	public ScheduledTask delay(
+	    long delay,
+	    String timeUnit,
+	    Boolean overwrites ) {
+		timeUnit = StringUtil.pluralize( timeUnit ).toUpperCase();
+		return delay( delay, TimeUnit.valueOf( timeUnit ), overwrites );
+	}
+
+	/**
 	 * Set an initial delay in the running of the task that will be registered with
 	 * this schedule in milliseconds
 	 *
@@ -1101,6 +1137,21 @@ public class ScheduledTask implements Runnable {
 	 */
 	public ScheduledTask delay( long delay, TimeUnit timeunit ) {
 		return delay( delay, timeunit, false );
+	}
+
+	/**
+	 * BoxLang proxy
+	 *
+	 * @param delay    The delay that will be used before executing the task
+	 * @param timeunit The time unit to use, available units are: days, hours,
+	 *                 microseconds, milliseconds, minutes, nanoseconds, and
+	 *                 seconds. The default
+	 *
+	 * @return The ScheduledTask instance
+	 */
+	public ScheduledTask delay( long delay, String timeunit ) {
+		timeunit = StringUtil.pluralize( timeunit ).toUpperCase();
+		return delay( delay, TimeUnit.valueOf( timeunit ), false );
 	}
 
 	/**
@@ -1560,6 +1611,33 @@ public class ScheduledTask implements Runnable {
 		setInitialDelayPeriodAndTimeUnit( now, nextRun, TimeUnit.DAYS, 365 );
 		// Set constraints
 		this.annually = true;
+
+		return this;
+	}
+
+	/**
+	 * Schedule this task using a cron expression.
+	 * Supports both 5-field Unix (min hour dom mon dow) and 6-field Quartz (sec min hour dom mon dow) formats.
+	 *
+	 * @param expression The cron expression string
+	 *
+	 * @return The ScheduledTask instance
+	 */
+	public ScheduledTask cron( String expression ) {
+		debugLog( "cron", () -> Struct.ofNonConcurrent( "expression", expression ) );
+
+		ortus.boxlang.runtime.async.CronExpression	cronExpr		= ortus.boxlang.runtime.async.CronExpression.parse( expression );
+
+		// Poll every 1 s for second-level crons, every 60 s (1 min) for minute-level crons.
+		// Both use SECONDS so the when-predicate is evaluated at the correct granularity.
+		long										pollPeriod		= cronExpr.isSecondsField() ? 1L : 60L;
+		TimeUnit									pollUnit		= TimeUnit.SECONDS;
+		long										initialDelayMs	= cronExpr.nextFireDelayMillis( this.getTimezone() );
+
+		this.setMetaKey( "cronExpression", expression );
+		this.delay( initialDelayMs, TimeUnit.MILLISECONDS )
+		    .every( pollPeriod, pollUnit )
+		    .when( task -> cronExpr.matches( task.getNow() ) );
 
 		return this;
 	}
@@ -2051,6 +2129,36 @@ public class ScheduledTask implements Runnable {
 	 */
 	private void setInitialDelayPeriodAndTimeUnit( LocalDateTime now, LocalDateTime nextRun ) {
 		setInitialDelayPeriodAndTimeUnit( now, nextRun, TimeUnit.DAYS, 1 );
+	}
+
+	/**
+	 * When an interval-based task ( every() ) has an explicit daily start time
+	 * ( startOnTime() / between() ) but no initial delay was set some other way, this
+	 * calculates an initial delay that aligns the first execution to the next period
+	 * boundary counted from that start time, instead of firing immediately on registration.
+	 */
+	private void calculateStartTimeAlignedDelay() {
+		LocalDateTime	now				= getNow();
+		LocalDateTime	anchor			= now
+		    .withHour( Integer.parseInt( this.startTime.split( ":" )[ 0 ] ) )
+		    .withMinute( Integer.parseInt( this.startTime.split( ":" )[ 1 ] ) )
+		    .withSecond( 0 )
+		    .withNano( 0 );
+		long			periodSeconds	= this.timeUnit.toSeconds( this.period );
+
+		if ( periodSeconds <= 0 ) {
+			return;
+		}
+
+		long elapsedSeconds = Duration.between( anchor, now ).getSeconds();
+		if ( elapsedSeconds > 0 ) {
+			long periodsElapsed = ( elapsedSeconds / periodSeconds ) + 1;
+			anchor = anchor.plusSeconds( periodsElapsed * periodSeconds );
+		}
+
+		this.initialDelay			= this.timeUnit.convert( Duration.between( now, anchor ) );
+		this.initialDelayTimeUnit	= this.timeUnit;
+		this.stats.put( "nextRun", anchor );
 	}
 
 	/**

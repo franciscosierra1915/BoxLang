@@ -22,8 +22,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import org.apache.commons.lang3.Strings;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
 
 import com.fasterxml.jackson.jr.ob.JSON;
 
@@ -212,36 +212,124 @@ public class StringUtil {
 	}
 
 	/**
-	 * Create kebab-case from a string
+	 * Create kebab-case from a string. Handles camelCase, PascalCase, snake_case,
+	 * space-separated, and already kebab-case inputs. Non-alphanumeric characters
+	 * are replaced with hyphens, and consecutive hyphens are collapsed.
+	 *
+	 * <p>
+	 * Examples:
+	 * </p>
+	 * <ul>
+	 * <li>{@code "myVariable"} → {@code "my-variable"} (camelCase)</li>
+	 * <li>{@code "MyClass"} → {@code "my-class"} (PascalCase)</li>
+	 * <li>{@code "my_variable"} → {@code "my-variable"} (snake_case)</li>
+	 * <li>{@code "my variable"} → {@code "my-variable"} (spaces)</li>
+	 * <li>{@code "my-variable"} → {@code "my-variable"} (already kebab-case, idempotent)</li>
+	 * <li>{@code "XMLParser"} → {@code "xml-parser"} (acronym boundary)</li>
+	 * <li>{@code "parseXMLHTTPRequest"} → {@code "parse-xmlhttp-request"} (complex camelCase)</li>
+	 * </ul>
 	 *
 	 * @param target The target string to convert to kebab-case
 	 *
 	 * @return The string in kebab-case
 	 */
 	public static String kebabCase( String target ) {
-		return RegexBuilder.of( target.toLowerCase(), RegexBuilder.MULTIPLE_SPACES ).replaceAllAndGet( "-" );
+		// Normalize to snake_case first to handle all input formats uniformly
+		String snake = snakeCase( target );
+		if ( snake.isEmpty() ) {
+			return "";
+		}
+		// Replace underscores with hyphens
+		return snake.replace( "_", "-" );
 	}
 
 	/**
-	 * Create snake_case from a string
+	 * Create snake_case from a string. Handles camelCase, PascalCase, kebab-case,
+	 * space-separated, and already snake_case inputs. Non-alphanumeric characters
+	 * are replaced with underscores, and consecutive underscores are collapsed.
+	 *
+	 * <p>
+	 * Examples:
+	 * </p>
+	 * <ul>
+	 * <li>{@code "myVariable"} → {@code "my_variable"} (camelCase)</li>
+	 * <li>{@code "MyClass"} → {@code "my_class"} (PascalCase)</li>
+	 * <li>{@code "my-variable"} → {@code "my_variable"} (kebab-case)</li>
+	 * <li>{@code "my variable"} → {@code "my_variable"} (spaces)</li>
+	 * <li>{@code "my_variable"} → {@code "my_variable"} (already snake_case, idempotent)</li>
+	 * <li>{@code "XMLParser"} → {@code "xml_parser"} (acronym boundary)</li>
+	 * <li>{@code "parseXMLHTTPRequest"} → {@code "parse_xmlhttp_request"} (complex camelCase)</li>
+	 * </ul>
 	 *
 	 * @param target The target string to convert to snake_case
 	 *
 	 * @return The string in snake_case
 	 */
 	public static String snakeCase( String target ) {
-		return RegexBuilder.of( target.toLowerCase(), RegexBuilder.MULTIPLE_SPACES ).replaceAllAndGet( "_" );
+		if ( target == null || target.isEmpty() ) {
+			return "";
+		}
+
+		String result = target;
+
+		// Step 1: Replace hyphens with underscores (handle kebab-case)
+		result	= result.replace( "-", "_" );
+
+		// Step 2: Insert underscore between lowercase/digit and uppercase (camelCase/PascalCase word boundaries)
+		// e.g., "myVar" → "my_Var", "test2X" → "test2_X"
+		result	= result.replaceAll( "([a-z\\d])([A-Z])", "$1_$2" );
+
+		// Step 3: Insert underscore between consecutive uppercase block and a following uppercase+lowercase pair (acronym boundary)
+		// e.g., "XMLParser" → "XML_Parser", "parseXMLHTTPRequest" → "parse_XMLHTTP_Request"
+		result	= result.replaceAll( "([A-Z]+)([A-Z][a-z])", "$1_$2" );
+
+		// Step 4: Lowercase everything
+		result	= result.toLowerCase();
+
+		// Step 5: Replace any non-alphanumeric character (except underscore) with underscore
+		result	= result.replaceAll( "[^a-z0-9_]", "_" );
+
+		// Step 6: Collapse consecutive underscores into a single underscore
+		result	= result.replaceAll( "_+", "_" );
+
+		// Step 7: Strip leading and trailing underscores
+		result	= result.replaceAll( "^_|_$", "" );
+
+		return result;
 	}
 
 	/**
-	 * Create pascal case from a string
+	 * Create PascalCase from a string. Handles camelCase, snake_case, kebab-case,
+	 * space-separated, and already PascalCase inputs. Non-alphanumeric characters
+	 * are treated as word separators.
 	 *
-	 * @param target The target string to convert to pascal case
+	 * <p>
+	 * Examples:
+	 * </p>
+	 * <ul>
+	 * <li>{@code "myVariable"} → {@code "MyVariable"} (camelCase)</li>
+	 * <li>{@code "my_variable"} → {@code "MyVariable"} (snake_case)</li>
+	 * <li>{@code "my-variable"} → {@code "MyVariable"} (kebab-case)</li>
+	 * <li>{@code "my variable"} → {@code "MyVariable"} (spaces)</li>
+	 * <li>{@code "MyClass"} → {@code "MyClass"} (already PascalCase, idempotent)</li>
+	 * <li>{@code "XMLParser"} → {@code "XmlParser"} (acronym boundary)</li>
+	 * <li>{@code "parseXMLHTTPRequest"} → {@code "ParseXmlhttpRequest"} (complex camelCase)</li>
+	 * </ul>
 	 *
-	 * @return The string in pascal case
+	 * @param target The target string to convert to PascalCase
+	 *
+	 * @return The string in PascalCase
 	 */
 	public static String pascalCase( String target ) {
-		return ucFirst( camelCase( target ) );
+		// Normalize to snake_case first to handle all input formats uniformly
+		String snake = snakeCase( target );
+		if ( snake.isEmpty() ) {
+			return "";
+		}
+		// Split on underscores, capitalize each word, and join
+		return Arrays.stream( snake.split( "_" ) )
+		    .map( StringUtil::ucFirst )
+		    .collect( Collectors.joining() );
 	}
 
 	/**
@@ -254,12 +342,11 @@ public class StringUtil {
 	public static String pluralize( String word ) {
 		String result = word;
 
-		if ( result.endsWith( "s" ) ) {
-			if ( result.endsWith( "ss" ) || result.endsWith( "us" ) ) {
-				result += "es";
-			} else {
-				result += "s";
-			}
+		// If already plural (ends in 's' but not 'ss' or 'us'), return as-is
+		if ( result.endsWith( "s" ) && !result.endsWith( "ss" ) && !result.endsWith( "us" ) ) {
+			return result;
+		} else if ( result.endsWith( "ss" ) || result.endsWith( "us" ) ) {
+			result += "es";
 		} else if ( result.endsWith( "y" ) ) {
 			String			lastTwoChars	= result.length() > 1 ? result.substring( result.length() - 2 ).toLowerCase() : "";
 			List<String>	suffixes		= Arrays.asList( "ay", "ey", "iy", "oy", "uy" );
@@ -321,6 +408,96 @@ public class StringUtil {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Fast case-insensitive suffix check using bitwise OR with 0x20.
+	 * This avoids allocating a new lowercase string just to check a suffix.
+	 * Bitwise OR with 0x20 converts ASCII uppercase to lowercase (e.g. 'A' (0x41) | 0x20 = 'a' (0x61)).
+	 *
+	 * <p>
+	 * <b>Safe characters</b> (no false collisions):
+	 * </p>
+	 * <ul>
+	 * <li>Letters: {@code A-Z}, {@code a-z} (intentional case folding)</li>
+	 * <li>Digits: {@code 0-9}</li>
+	 * <li>Punctuation: {@code ! " # $ % & ' ( ) * + , - . / : ; < = > ? _}</li>
+	 * <li>Space</li>
+	 * </ul>
+	 *
+	 * <p>
+	 * <b>Unsafe characters</b> (these pairs collide — differ only in bit 5):
+	 * </p>
+	 * <ul>
+	 * <li>{@code @} (0x40) collides with {@code `} (0x60)</li>
+	 * <li>{@code [} (0x5B) collides with <code>{</code> (0x7B)</li>
+	 * <li>{@code \} (0x5C) collides with {@code |} (0x7C)</li>
+	 * <li>{@code ]} (0x5D) collides with <code>}</code> (0x7D)</li>
+	 * <li>{@code ^} (0x5E) collides with {@code ~} (0x7E)</li>
+	 * </ul>
+	 *
+	 * @param str    The string to check
+	 * @param suffix The suffix to match (case-insensitive)
+	 *
+	 * @return True if the string ends with the suffix (case-insensitive)
+	 */
+	public static boolean endsWithIgnoreCase( String str, String suffix ) {
+		int	strLen		= str.length();
+		int	suffixLen	= suffix.length();
+		if ( suffixLen > strLen ) {
+			return false;
+		}
+		for ( int i = 0; i < suffixLen; i++ ) {
+			if ( ( str.charAt( strLen - suffixLen + i ) | 0x20 ) != ( suffix.charAt( i ) | 0x20 ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Fast case-insensitive prefix check using bitwise OR with 0x20.
+	 * This avoids allocating a new lowercase string just to check a prefix.
+	 * Bitwise OR with 0x20 converts ASCII uppercase to lowercase (e.g. 'A' (0x41) | 0x20 = 'a' (0x61)).
+	 *
+	 * <p>
+	 * <b>Safe characters</b> (no false collisions):
+	 * </p>
+	 * <ul>
+	 * <li>Letters: {@code A-Z}, {@code a-z} (intentional case folding)</li>
+	 * <li>Digits: {@code 0-9}</li>
+	 * <li>Punctuation: {@code ! " # $ % & ' ( ) * + , - . / : ; < = > ? _}</li>
+	 * <li>Space</li>
+	 * </ul>
+	 *
+	 * <p>
+	 * <b>Unsafe characters</b> (these pairs collide — differ only in bit 5):
+	 * </p>
+	 * <ul>
+	 * <li>{@code @} (0x40) collides with {@code `} (0x60)</li>
+	 * <li>{@code [} (0x5B) collides with <code>{</code> (0x7B)</li>
+	 * <li>{@code \} (0x5C) collides with {@code |} (0x7C)</li>
+	 * <li>{@code ]} (0x5D) collides with <code>}</code> (0x7D)</li>
+	 * <li>{@code ^} (0x5E) collides with {@code ~} (0x7E)</li>
+	 * </ul>
+	 *
+	 * @param str    The string to check
+	 * @param prefix The prefix to match (case-insensitive)
+	 *
+	 * @return True if the string starts with the prefix (case-insensitive)
+	 */
+	public static boolean startsWithIgnoreCase( String str, String prefix ) {
+		int	strLen		= str.length();
+		int	prefixLen	= prefix.length();
+		if ( prefixLen > strLen ) {
+			return false;
+		}
+		for ( int i = 0; i < prefixLen; i++ ) {
+			if ( ( str.charAt( i ) | 0x20 ) != ( prefix.charAt( i ) | 0x20 ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 }

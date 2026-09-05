@@ -27,6 +27,7 @@ import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Array;
 import ortus.boxlang.runtime.types.IStruct;
 import ortus.boxlang.runtime.types.Query;
+import ortus.boxlang.runtime.types.Range;
 import ortus.boxlang.runtime.types.Struct;
 import ortus.boxlang.runtime.types.exceptions.BoxCastException;
 import ortus.boxlang.runtime.types.util.TypeUtil;
@@ -172,9 +173,9 @@ public class BooleanCaster implements IBoxCaster {
 
 		// Check for string
 		if ( object instanceof String str ) {
-			Key aliasKey = Key.of( str.trim() );
-			if ( wkt.containsKey( aliasKey ) ) {
-				return wkt.getAsBoolean( aliasKey );
+			Boolean boolResult = parseBooleanString( str );
+			if ( boolResult != null ) {
+				return boolResult;
 			}
 			if ( numbersAreBooleans ) {
 				// Is string a number
@@ -199,6 +200,7 @@ public class BooleanCaster implements IBoxCaster {
 		if ( loose ) {
 			// performance improvement https://openjdk.org/jeps/441
 			return switch ( object ) {
+				case Range<?> castedRange -> !castedRange.isEmpty();
 				case Array castedArray -> !castedArray.isEmpty();
 				case List<?> castedList -> !castedList.isEmpty();
 				case Struct castedStruct -> !castedStruct.isEmpty();
@@ -231,6 +233,66 @@ public class BooleanCaster implements IBoxCaster {
 	 */
 	public static IStruct getBooleanStrings() {
 		return wkt;
+	}
+
+	/**
+	 * High-performance boolean string parser that avoids Key/Struct overhead.
+	 * Uses string length to funnel into specific checks, and the bitwise OR trick
+	 * ({@code ch | 0x20}) for case-insensitive ASCII letter comparison without allocation.
+	 *
+	 * @param str The string to parse (will be trimmed)
+	 *
+	 * @return {@code Boolean.TRUE}, {@code Boolean.FALSE}, or {@code null} if not a boolean string
+	 */
+	public static Boolean parseBooleanString( String str ) {
+		int	start	= 0;
+		int	end		= str.length();
+
+		// Inline trim: skip leading whitespace
+		while ( start < end && str.charAt( start ) <= ' ' ) {
+			start++;
+		}
+		// Skip trailing whitespace
+		while ( end > start && str.charAt( end - 1 ) <= ' ' ) {
+			end--;
+		}
+
+		int len = end - start;
+
+		switch ( len ) {
+			case 2 : // "no"
+				if ( ( str.charAt( start ) | 0x20 ) == 'n'
+				    && ( str.charAt( start + 1 ) | 0x20 ) == 'o' ) {
+					return Boolean.FALSE;
+				}
+				return null;
+			case 3 : // "yes"
+				if ( ( str.charAt( start ) | 0x20 ) == 'y'
+				    && ( str.charAt( start + 1 ) | 0x20 ) == 'e'
+				    && ( str.charAt( start + 2 ) | 0x20 ) == 's' ) {
+					return Boolean.TRUE;
+				}
+				return null;
+			case 4 : // "true"
+				if ( ( str.charAt( start ) | 0x20 ) == 't'
+				    && ( str.charAt( start + 1 ) | 0x20 ) == 'r'
+				    && ( str.charAt( start + 2 ) | 0x20 ) == 'u'
+				    && ( str.charAt( start + 3 ) | 0x20 ) == 'e' ) {
+					return Boolean.TRUE;
+				}
+				return null;
+			case 5 : // "false"
+				if ( ( str.charAt( start ) | 0x20 ) == 'f'
+				    && ( str.charAt( start + 1 ) | 0x20 ) == 'a'
+				    && ( str.charAt( start + 2 ) | 0x20 ) == 'l'
+				    && ( str.charAt( start + 3 ) | 0x20 ) == 's'
+				    && ( str.charAt( start + 4 ) | 0x20 ) == 'e' ) {
+					return Boolean.FALSE;
+				}
+				return null;
+			default :
+				return null;
+		}
 	}
 
 }

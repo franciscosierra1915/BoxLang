@@ -24,7 +24,6 @@ import ortus.boxlang.runtime.scopes.ArgumentsScope;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Argument;
 import ortus.boxlang.runtime.types.DateTime;
-import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
 import ortus.boxlang.runtime.util.LocalizationUtil;
 
 @BoxBIF( description = "Create a time object" )
@@ -58,6 +57,8 @@ public class CreateTime extends BIF {
 	 * @argument.second The second of the date-time object.
 	 * 
 	 * @argument.millisecond The millisecond of the date-time object.
+	 *
+	 * @argument.timezone The timezone to apply to the date-time object. Defaults to the system default timezone.
 	 */
 	public Object _invoke( IBoxContext context, ArgumentsScope arguments ) {
 		ZoneId timezone = LocalizationUtil.parseZoneId( arguments.getAsString( Key.timezone ), context );

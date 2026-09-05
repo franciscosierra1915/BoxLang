@@ -64,13 +64,17 @@ public class BoxBinaryOperation extends BoxExpression {
 	public void setLeft( BoxExpression left ) {
 		replaceChildren( this.left, left );
 		this.left = left;
-		this.left.setParent( this );
+		if ( this.left != null ) {
+			this.left.setParent( this );
+		}
 	}
 
 	public void setRight( BoxExpression right ) {
 		replaceChildren( this.right, right );
 		this.right = right;
-		this.right.setParent( this );
+		if ( this.right != null ) {
+			this.right.setParent( this );
+		}
 	}
 
 	public void setOperator( BoxBinaryOperator operator ) {
@@ -81,9 +85,9 @@ public class BoxBinaryOperation extends BoxExpression {
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = super.toMap();
 
-		map.put( "left", left.toMap() );
+		map.put( "left", left != null ? left.toMap() : null );
 		map.put( "operator", enumToMap( operator ) );
-		map.put( "right", right.toMap() );
+		map.put( "right", right != null ? right.toMap() : null );
 		return map;
 	}
 
@@ -93,6 +97,25 @@ public class BoxBinaryOperation extends BoxExpression {
 
 	public BoxNode accept( ReplacingBoxVisitor v ) {
 		return v.visit( this );
+	}
+
+	@Override
+	public boolean returnsBoolean() {
+		return this.operator.isBoolean();
+	}
+
+	@Override
+	public boolean returnsNumber() {
+		// Operators that ALWAYS return a number (division, modulus, bitwise, etc.)
+		if ( this.operator.isNumeric() ) {
+			return true;
+		}
+		// Set-aware operators (Plus, Minus, Star, Power) return Number only when
+		// both operands are known to be numeric — otherwise the result may be a BoxSet.
+		return switch ( this.operator ) {
+			case Plus, Minus, Star, Power -> this.left.returnsNumber() && this.right.returnsNumber();
+			default -> false;
+		};
 	}
 
 }

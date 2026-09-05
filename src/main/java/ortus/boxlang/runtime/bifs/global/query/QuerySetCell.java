@@ -23,7 +23,7 @@ import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Argument;
 import ortus.boxlang.runtime.types.BoxLangType;
 import ortus.boxlang.runtime.types.Query;
-import ortus.boxlang.runtime.dynamic.casters.GenericCaster;
+import ortus.boxlang.runtime.types.QueryColumnType;
 
 @BoxBIF( description = "Set the value of a specific cell in a query" )
 @BoxMember( type = BoxLangType.QUERY )
@@ -58,7 +58,7 @@ public class QuerySetCell extends BIF {
 	 */
 	public Object _invoke( IBoxContext context, ArgumentsScope arguments ) {
 		Query	query		= arguments.getAsQuery( Key.query );
-		Key		columnName	= Key.of( arguments.getAsString( Key.column ) );
+		Key		columnName	= Key.of( arguments.getAsString( Key.column ).trim() );
 		Integer	rowNumber	= arguments.getAsInteger( Key.row );
 		Object	value		= arguments.get( Key.value );
 
@@ -66,7 +66,11 @@ public class QuerySetCell extends BIF {
 			rowNumber = query.size();
 		}
 
-		String columnType = query.getColumn( columnName ).getType().toString();
-		return query.setCell( columnName, rowNumber - 1, GenericCaster.cast( context, value, columnType ) );
+		QueryColumnType columnType = query.getColumn( columnName ).getType();
+		if ( Query.queryNullToEmpty && !QueryColumnType.isStringType( columnType ) && value instanceof String castValue
+		    && castValue.isEmpty() ) {
+			value = null;
+		}
+		return query.setCell( columnName, rowNumber - 1, value != null ? QueryColumnType.toSQLType( columnType, value, context, null ) : null );
 	}
 }

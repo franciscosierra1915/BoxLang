@@ -88,7 +88,7 @@ public class FileTest {
 		    context, BoxSourceType.CFTEMPLATE );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "I am writing!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "I am writing!" );
 	}
 
 	@Test
@@ -102,7 +102,23 @@ public class FileTest {
 		    context, BoxSourceType.BOXTEMPLATE );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "I am writing!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "I am writing!" );
+	}
+
+	@Test
+	public void testBinaryFileWrite() throws IOException {
+		assertFalse( FileSystemUtil.exists( testBinaryFile ) );
+		variables.put( Key.of( "testFile" ), Path.of( testBinaryFile ).toAbsolutePath().toString() );
+		variables.put( Key.of( "testURLImage" ), testURLImage );
+		instance.executeSource(
+		    """
+		    <cffile action="readBinary" file="#testURLImage#" variable="imageData">
+		       <cffile action="write" file="#testFile#" output="#imageData#" >
+		       """,
+		    context, BoxSourceType.CFTEMPLATE );
+
+		assertThat( FileSystemUtil.exists( testBinaryFile ) ).isTrue();
+		assertThat( FileSystemUtil.readBinary( testBinaryFile ) ).isInstanceOf( byte[].class );
 	}
 
 	@Test
@@ -116,7 +132,7 @@ public class FileTest {
 		    context, BoxSourceType.BOXSCRIPT );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "I am writing!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "I am writing!" );
 	}
 
 	@Test
@@ -132,7 +148,7 @@ public class FileTest {
 		    context, BoxSourceType.CFTEMPLATE );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "file read test!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "file read test!" );
 	}
 
 	@Test
@@ -148,7 +164,7 @@ public class FileTest {
 		    context, BoxSourceType.BOXTEMPLATE );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "file read test!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "file read test!" );
 	}
 
 	@Test
@@ -164,7 +180,7 @@ public class FileTest {
 		    context, BoxSourceType.BOXSCRIPT );
 
 		assertThat( FileSystemUtil.exists( testTextFile ) ).isTrue();
-		assertThat( FileSystemUtil.read( testTextFile, ( String ) null, ( Integer ) null ) ).isEqualTo( "file read test!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) ).isEqualTo( "file read test!" );
 	}
 
 	@Test
@@ -421,7 +437,8 @@ public class FileTest {
 		    bx:file action="append" file="#testFile#" output="Success!";
 		    """,
 		    context, BoxSourceType.BOXSCRIPT );
-		assertThat( FileSystemUtil.read( testTextFile, null, null, true ) ).isEqualTo( "file read test!" + FileSystemUtil.LINE_SEPARATOR + "Success!" );
+		assertThat( FileSystemUtil.readString( testTextFile ) )
+		    .isEqualTo( "file read test!" + FileSystemUtil.LINE_SEPARATOR + "Success!" + FileSystemUtil.LINE_SEPARATOR );
 	}
 
 }

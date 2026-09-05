@@ -90,7 +90,12 @@ public class BoxStaticMethodInvocationTransformer extends AbstractTransformer {
 		    false )
 		);
 
-		nodes.addAll( AsmHelper.callReferencerGetAndInvoke( transpiler, invocation.getArguments(), invocation.getName().getName(), context, false ) );
+		nodes.addAll( AsmHelper.callReferencerGetAndInvoke( transpiler, invocation.getArguments(), invocation.getName().getName(), context, false,
+		    invocation.isNamedArgs(), invocation.hasSpread() ) );
+
+		if ( returnValueContext.empty ) {
+			nodes.add( new InsnNode( Opcodes.POP ) );
+		}
 
 		return AsmHelper.addLineNumberLabels( nodes, node );
 	}

@@ -14,32 +14,39 @@
  */
 package ortus.boxlang.compiler.javaboxpiler.transformer;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.ArrayCreationExpr;
+import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.EmptyStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.UnknownType;
 
 import ortus.boxlang.compiler.IBoxpiler;
+import ortus.boxlang.compiler.JavaMethodResolver;
 import ortus.boxlang.compiler.ast.BoxClass;
 import ortus.boxlang.compiler.ast.BoxExpression;
 import ortus.boxlang.compiler.ast.BoxNode;
@@ -47,6 +54,7 @@ import ortus.boxlang.compiler.ast.BoxStatement;
 import ortus.boxlang.compiler.ast.Source;
 import ortus.boxlang.compiler.ast.SourceFile;
 import ortus.boxlang.compiler.ast.expression.BoxBooleanLiteral;
+import ortus.boxlang.compiler.ast.expression.BoxFQN;
 import ortus.boxlang.compiler.ast.expression.BoxIntegerLiteral;
 import ortus.boxlang.compiler.ast.expression.BoxStringLiteral;
 import ortus.boxlang.compiler.ast.statement.BoxAnnotation;
@@ -62,6 +70,7 @@ import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.config.util.PlaceholderHelper;
 import ortus.boxlang.runtime.dynamic.casters.BooleanCaster;
 import ortus.boxlang.runtime.dynamic.javaproxy.InterfaceProxyService;
+import ortus.boxlang.runtime.loader.ImportDefinition;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Array;
 import ortus.boxlang.runtime.types.exceptions.BoxRuntimeException;
@@ -88,9 +97,11 @@ public class BoxClassTransformer extends AbstractTransformer {
 		import ortus.boxlang.runtime.dynamic.IReferenceable;
 		import ortus.boxlang.runtime.dynamic.Referencer;
 		import ortus.boxlang.runtime.interop.DynamicObject;
+		import ortus.boxlang.runtime.interop.DynamicInteropService;
 		import ortus.boxlang.runtime.loader.ClassLocator;
 		import ortus.boxlang.runtime.loader.ImportDefinition;
 		import ortus.boxlang.runtime.operators.*;
+		import ortus.boxlang.runtime.operators.Range;
 		import ortus.boxlang.runtime.runnables.BoxClassSupport;
 		import ortus.boxlang.runtime.runnables.BoxInterface;
 		import ortus.boxlang.runtime.runnables.BoxScript;
@@ -119,6 +130,7 @@ public class BoxClassTransformer extends AbstractTransformer {
 		import java.nio.file.Paths;
 		import java.time.LocalDateTime;
 		import java.util.ArrayList;
+		import java.util.Arrays;
 		import java.util.Collections;
 		import java.util.HashMap;
 		import java.util.Iterator;
@@ -141,27 +153,34 @@ public class BoxClassTransformer extends AbstractTransformer {
 			// public so the static initializer can access it
 			public static final ResolvedFilePath path = ${resolvedFilePath};
 			private static final BoxSourceType sourceType = BoxSourceType.${sourceType};
-			private static DynamicObject superClass = null;
-			private static List<BoxInterface> interfaces = new ArrayList<>();
+			private static String superClassName = ${superClassName};
+			private static String[] interfaceNames = ${interfaceNames};
 			private static final IStruct annotations;
 			private static final IStruct documentation;
 			private static final Map<Key,Property>	properties;
 			private static final Map<Key,Property>	getterLookup=null;
 			private static final Map<Key,Property>	setterLookup=null;
 			private static Map<Key, AbstractFunction>	abstractMethods	= new LinkedHashMap<>();
-			private static Map<Key, Class<? extends UDF>> compileTimeMethods = ${compileTimeMethods};
 			private static final boolean isJavaExtends=${isJavaExtends};
 			private static StaticScope staticScope = new StaticScope();
 			// This is public so the ClassLocator can check it easily
 			public static boolean staticInitialized = false;
 			public static final Key name = ${boxFQN};
+			private static List<Lambda>					lambdas			= new ArrayList<>( Arrays.asList( new Lambda[] {} ) );
+			private static List<ClosureDefinition>		closures		= new ArrayList<>( Arrays.asList( new ClosureDefinition[] {} ) );
+			private static Map<Key,UDF>					udfs			= StructUtil.<UDF>linkedMapOf();
 			// Used to cached modern metadata (created on-demand)
 			public static IStruct metadata = null;
 			// Used to cached legacy metadata (created on-demand, never used if compat isn't installed)
 			public static IStruct legacyMetadata = null;
+			private static final boolean isFinal = ${isFinal};
+			private static final boolean isAbstract = ${isAbstract};
+			private static final Key initMethod = ${initMethod};
+			private static Boolean canOutput = null;
+			private static Boolean canInvokeImplicitAccessor = null;
 
 			static {
-				superClass = BoxClassSupport.runStaticInitializer( ${className}::staticInitializer, ${className}.class, ${className}.staticScope, ${className}.path, imports, interfaces, annotations );
+				BoxClassSupport.runStaticInitializer( ${className}::staticInitializer, ${className}.class, ${className}.staticScope, ${className}.path );
 			}
 
 			// Private instance fields
@@ -169,8 +188,7 @@ public class BoxClassTransformer extends AbstractTransformer {
 			private ThisScope thisScope = new ThisScope();
 			private IClassRunnable _super = null;
 			private IClassRunnable child = null;
-			private Boolean canOutput = null;
-			private Boolean canInvokeImplicitAccessor = null;
+			private List<BoxInterface> interfaces = new ArrayList<>();
 
 			// Public instance fields
 			public transient BoxMeta		$bx;
@@ -194,21 +212,15 @@ public class BoxClassTransformer extends AbstractTransformer {
 			}
 
 			public Map<Key, AbstractFunction> getAllAbstractMethods() {
-				// get from parent and override
-				Map<Key, AbstractFunction> allAbstractMethods = new LinkedHashMap<>();
-				if ( this._super != null ) {
-					allAbstractMethods.putAll( this._super.getAllAbstractMethods() );
-				}
-				allAbstractMethods.putAll( this.abstractMethods );
-				return allAbstractMethods;
+				return BoxClassSupport.getAllAbstractMethods( this );
 			}
 
 			public Set<Key> getCompileTimeMethodNames() {
-				return ${className}.compileTimeMethods.keySet();
+				return ${className}.udfs.keySet();
 			}
 
-			public Map<Key, Class<? extends UDF>> getCompileTimeMethods() {
-				return ${className}.compileTimeMethods;
+			public Map<Key, UDF> getUDFs() {
+				return ${className}.udfs;
 			}
 
 			public BoxMeta _getbx() {
@@ -257,6 +269,22 @@ public class BoxClassTransformer extends AbstractTransformer {
 			// Static method required to get statically
 			public StaticScope getStaticScope() {
 				return ${className}.staticScope;
+			}
+
+			public Class<?> getEnclosingBoxClass() {
+				return ${enclosingBoxClass};
+			}
+
+			public String getEnclosingClassName() {
+				return ${enclosingClassName};
+			}
+
+			public IStruct getInnerClassNames() {
+				return ${innerClassNamesExpr};
+			}
+
+			public static IStruct getInnerClassNamesStatic() {
+				return ${innerClassNamesExpr};
 			}
 
 			public IStruct getAnnotations() {
@@ -311,8 +339,12 @@ public class BoxClassTransformer extends AbstractTransformer {
 				this.canInvokeImplicitAccessor = canInvokeImplicitAccessor;
 			}
 
-			public DynamicObject getSuperClass() {
-				return superClass;
+			public String getBoxSuperClassName() {
+				return ${className}.superClassName;
+			}
+
+			public String[] getBoxInterfaceNames() {
+				return ${className}.interfaceNames;
 			}
 
 			public IClassRunnable getSuper() {
@@ -337,6 +369,18 @@ public class BoxClassTransformer extends AbstractTransformer {
 
 			public IClassRunnable getBottomClass() {
 				return BoxClassSupport.getBottomClass( this );
+			}
+				
+			public boolean isFinalClass() {
+				return ${className}.isFinal;
+			}
+
+			public boolean isAbstractClass() {
+				return ${className}.isAbstract;
+			}
+
+			public Key getInitMethod() {
+				return ${className}.initMethod;
 			}
 
 			/**
@@ -387,14 +431,16 @@ public class BoxClassTransformer extends AbstractTransformer {
 								${className}.name,
 								${className}.sourceType,
 								${className}.path,
-								${className}.superClass,
-								${className}.interfaces,
+								BoxClassSupport.loadSuperClass( ${className}.superClassName, imports, null, ${className}.path ),
+								BoxClassSupport.loadInterfaces( ${className}.interfaceNames, imports, null, ${className}.path ),
 								${className}.abstractMethods,
-								${className}.compileTimeMethods,
+								${className}.udfs,
 								${className}.annotations,
 								${className}.documentation,
 								${className}.properties,
-								${className}.staticScope				
+								${className}.staticScope,
+								${enclosingClassName},
+								${innerClassNamesExpr}
 							);
 						}
 					}
@@ -412,14 +458,16 @@ public class BoxClassTransformer extends AbstractTransformer {
 								${className}.name,
 								${className}.sourceType,
 								${className}.path,
-								${className}.superClass,
-								${className}.interfaces,
+								BoxClassSupport.loadSuperClass( ${className}.superClassName, imports, null, ${className}.path ),
+								BoxClassSupport.loadInterfaces( ${className}.interfaceNames, imports, null, ${className}.path ),
 								${className}.abstractMethods,
-								${className}.compileTimeMethods,
+								${className}.udfs,
 								${className}.annotations,
 								${className}.documentation,
 								${className}.properties,
-								${className}.staticScope				
+								${className}.staticScope,
+								${enclosingClassName},
+								${innerClassNamesExpr}
 							);
 						}
 					}
@@ -480,8 +528,9 @@ public class BoxClassTransformer extends AbstractTransformer {
 
 	/**
 	 * The marker used to indicate that a method should be overridden in the Java class
+	 * Make these lowercase so we can match below on lowercase without worrying about case sensitivity
 	 */
-	private static final String	EXTENDS_ANNOTATION_MARKER	= "overrideJava";
+	private static final Set<String>	EXTENDS_ANNOTATION_MARKERS	= Set.of( "overridejava", "override" );
 
 	/**
 	 * Constructor
@@ -506,6 +555,8 @@ public class BoxClassTransformer extends AbstractTransformer {
 		String			extendsTemplate		= "";
 		String			extendsMethods		= "";
 		String			isJavaExtends		= "false";
+		String			superClassName		= "null";
+		String			interfaceNames		= "new String[0]";
 		// The list of automatically implemented interfaces
 		List<String>	interfaces			= new ArrayList<>();
 		interfaces.add( "IClassRunnable" );
@@ -515,26 +566,51 @@ public class BoxClassTransformer extends AbstractTransformer {
 
 		/**
 		 * --------------------------------------------------------------------------
+		 * Build compile-time import definitions from the BoxLang source
+		 * --------------------------------------------------------------------------
+		 * These are used to resolve import aliases (e.g. "import foo.Bar as MyBar")
+		 * when processing extends and implements annotations.
+		 */
+		List<ImportDefinition>	compileTimeImports	= boxClass.getImports().stream()
+		    .filter( imp -> imp.getExpression() != null )
+		    .map( imp -> {
+														    String expression = imp.getExpression() instanceof BoxFQN fqn ? fqn.getValue()
+														        : imp.getExpression().toString();
+														    String alias	= imp.getAlias() != null ? " as " + imp.getAlias().getName() : "";
+														    return ImportDefinition.parse( expression + alias );
+													    } )
+		    .collect( java.util.stream.Collectors.toList() );
+
+		/**
+		 * --------------------------------------------------------------------------
 		 * Process Interface Annotations
 		 * --------------------------------------------------------------------------
 		 */
-		BoxExpression implementsValue = boxClass.getAnnotations().stream()
+		BoxExpression			implementsValue		= boxClass.getAnnotations().stream()
 		    .filter( it -> it.getKey().getValue().equalsIgnoreCase( "implements" ) )
 		    .findFirst()
 		    .map( it -> it.getValue() )
 		    .orElse( null );
 		if ( implementsValue instanceof BoxStringLiteral str ) {
-			String	implementsStringList		= str.getValue();
+			String	implementsStringList	= str.getValue();
 			// Collect and trim all strings starting with "java:"
-			Array	implementsArray				= ListUtil.asList( implementsStringList, "," ).stream()
+			Array	implementsArray			= ListUtil.asList( implementsStringList, "," ).stream()
 			    .map( String::valueOf )
 			    .map( String::trim )
 			    .filter( it -> it.toLowerCase().startsWith( "java:" ) )
 			    .map( it -> it.substring( 5 ) )
 			    .collect( BLCollector.toArray() );
 
+			interfaceNames = ListUtil.asList( implementsStringList, "," ).stream()
+			    .map( String::valueOf )
+			    .map( String::trim )
+			    .filter( it -> !it.toLowerCase().startsWith( "java:" ) )
+			    .map( it -> '"' + it + '"' )
+			    .collect( java.util.stream.Collectors.joining( ", ", "new String[] {", "}" ) );
+
 			// var interfaceProxyDefinition = InterfaceProxyService.generateDefinition( new ScriptingRequestBoxContext(), implementsArray );
-			var		interfaceProxyDefinition	= InterfaceProxyService.generateDefinition( BoxRuntime.getInstance().getRuntimeContext(), implementsArray );
+			var interfaceProxyDefinition = InterfaceProxyService.generateDefinition( BoxRuntime.getInstance().getRuntimeContext(), implementsArray,
+			    compileTimeImports );
 
 			// TODO: Remove methods that already have a @overrideJava UDF definition to avoid duplicates
 			interfaces.addAll( interfaceProxyDefinition.interfaces() );
@@ -555,14 +631,44 @@ public class BoxClassTransformer extends AbstractTransformer {
 			String extendsStringValue = str.getValue().trim();
 			if ( extendsStringValue.toLowerCase().startsWith( "java:" ) ) {
 				extendsStringValue	= extendsStringValue.substring( 5 );
-				extendsTemplate		= "extends " + extendsStringValue;
 				isJavaExtends		= "true";
-				// search for UDFs that need a proxy created
-				extendsMethods		= boxClass.getDescendantsOfType( BoxFunctionDeclaration.class )
-				    .stream()
-				    .filter( it -> it.getAnnotations().stream().anyMatch( anno -> anno.getKey().getValue().equalsIgnoreCase( EXTENDS_ANNOTATION_MARKER ) ) )
-				    .map( this::createJavaMethodStub )
-				    .collect( java.util.stream.Collectors.joining( "\n" ) );
+				// First try to load the Java class directly and match any local UDFs to methods on the class
+				Class<?> javaClass = JavaMethodResolver.resolveClass( extendsStringValue, compileTimeImports );
+				if ( javaClass != null ) {
+					// Use the resolved class name (expands aliases) for the extends template
+					extendsTemplate = "extends " + javaClass.getName();
+					// Collect UDF names from the BoxLang class AST
+					Set<String>												udfNames		= boxClass.getDescendantsOfType( BoxFunctionDeclaration.class )
+					    .stream()
+					    .map( f -> f.getName().toLowerCase() )
+					    .collect( java.util.stream.Collectors.toSet() );
+
+					// Resolve matching Java methods from the class hierarchy
+					Map<String, List<JavaMethodResolver.ResolvedMethod>>	matchedMethods	= JavaMethodResolver.resolveMatchingMethods( javaClass, udfNames );
+
+					// Generate a stub for each overload of each matched method
+					StringBuilder											sb				= new StringBuilder();
+					for ( Map.Entry<String, List<JavaMethodResolver.ResolvedMethod>> entry : matchedMethods.entrySet() ) {
+						for ( JavaMethodResolver.ResolvedMethod method : entry.getValue() ) {
+							sb.append( createJavaMethodStubFromResolved( method ) );
+							sb.append( "\n" );
+						}
+					}
+					extendsMethods = sb.toString();
+				} else {
+					// If the class can't be loaded, use the raw extends value for the template
+					extendsTemplate = "extends " + extendsStringValue;
+					// Fall back to looking for the @javaOverride annotation.
+					extendsMethods = boxClass.getDescendantsOfType( BoxFunctionDeclaration.class )
+					    .stream()
+					    .filter(
+					        it -> it.getAnnotations().stream()
+					            .anyMatch( anno -> EXTENDS_ANNOTATION_MARKERS.contains( anno.getKey().getValue().toLowerCase() ) ) )
+					    .map( this::createJavaMethodStub )
+					    .collect( java.util.stream.Collectors.joining( "\n" ) );
+				}
+			} else {
+				superClassName = '"' + extendsStringValue + '"';
 			}
 		}
 
@@ -571,21 +677,51 @@ public class BoxClassTransformer extends AbstractTransformer {
 		 * Prep the class template properties
 		 * --------------------------------------------------------------------------
 		 */
-		String							fileName	= source instanceof SourceFile file && file.getFile() != null ? file.getFile().getName() : "unknown";
-		String							filePath	= source instanceof SourceFile file && file.getFile() != null ? file.getFile().getAbsolutePath()
-		    : "unknown";
-		String							sourceType	= transpiler.getProperty( "sourceType" );
+		String filePath = "unknown";
+		if ( source instanceof SourceFile file && file.getFile() != null ) {
+			try {
+				filePath = file.getFile().toPath().toRealPath().toString();
+			} catch ( IOException e ) {
+				// If the file no longer exists or can't be accessed, then ignore.
+			}
+		}
+		String				sourceType				= transpiler.getProperty( "sourceType" );
+
+		// Pre-compute enclosing class name expression
+		String				enclosingBoxFQN			= transpiler.getProperty( "enclosingBoxFQN" );
+		String				enclosingClassNameExpr	= enclosingBoxFQN != null && !enclosingBoxFQN.isEmpty()
+		    ? "\"" + enclosingBoxFQN + "\""
+		    : "\"\"";
+
+		// Pre-compute inner class names expression
+		Map<String, String>	localClassMap			= ( ( JavaTranspiler ) transpiler ).getLocalClasses();
+		String				innerClassNamesExpr;
+		if ( !localClassMap.isEmpty() ) {
+			StringBuilder	sb		= new StringBuilder( "Struct.of(" );
+			boolean			first	= true;
+			for ( String shortName : localClassMap.keySet() ) {
+				if ( !first )
+					sb.append( ", " );
+				sb.append( "\"" ).append( shortName ).append( "\", \"" ).append( boxFQN ).append( "$" ).append( shortName ).append( "\"" );
+				first = false;
+			}
+			sb.append( ")" );
+			innerClassNamesExpr = sb.toString();
+		} else {
+			innerClassNamesExpr = "Struct.EMPTY";
+		}
 
 		// This map replaces the string template
-		Map<String, String>				values		= Map.ofEntries(
+		Map<String, String>				values	= Map.ofEntries(
 		    Map.entry( "packagename", packageName ),
 		    Map.entry( "className", className ),
-		    Map.entry( "fileName", fileName ),
 		    Map.entry( "interfaceMethods", interfaceMethods ),
 		    Map.entry( "interfaceList", interfaces.stream().collect( java.util.stream.Collectors.joining( ", " ) ) ),
 		    Map.entry( "extendsTemplate", extendsTemplate ),
 		    Map.entry( "extendsMethods", extendsMethods ),
 		    Map.entry( "isJavaExtends", isJavaExtends ),
+		    Map.entry( "superClassName", superClassName ),
+		    Map.entry( "interfaceNames", interfaceNames ),
 		    Map.entry( "sourceType", sourceType ),
 		    Map.entry( "resolvedFilePath", transpiler.getResolvedFilePath( mappingName, mappingPath, relativePath, filePath ) ),
 		    Map.entry( "boxlangVersion", BoxRuntime.getInstance().getVersionInfo().getAsString( Key.version ) ),
@@ -593,9 +729,33 @@ public class BoxClassTransformer extends AbstractTransformer {
 		    // Don't use the transpiler helper method for this so it's always a Key.of() call. When re-defining a class, we want this to be a Key.of() call.
 		    // Casting input to Object to match the same bytecode the ASM boxpiler uses, which the DiskClassLoader ASM vistor looks for.
 		    Map.entry( "boxFQN", "Key.of( (Object)\"" + boxFQN + "\" )" ),
-		    Map.entry( "compileTimeMethods", generateCompileTimeMethods( boxClass ) )
+		    Map.entry( "isFinal", String.valueOf( boxClass.getAnnotations().stream()
+		        .filter( it -> it.getKey().getValue().equalsIgnoreCase( "final" ) )
+		        .findFirst().isPresent() ) ),
+		    Map.entry( "isAbstract", String.valueOf( boxClass.getAnnotations().stream()
+		        .filter( it -> it.getKey().getValue().equalsIgnoreCase( "abstract" ) )
+		        .findFirst().isPresent() ) ),
+		    Map.entry( "initMethod", boxClass.getAnnotations().stream()
+		        .filter( it -> it.getKey().getValue().equalsIgnoreCase( "initMethod" ) )
+		        .findFirst()
+		        .map( it -> {
+			        if ( it.getValue() instanceof BoxStringLiteral str ) {
+				        return "Key.of( (Object)\"" + str.getValue() + "\" )";
+			        } else {
+				        throw new BoxRuntimeException( "The value of the [initMethod] annotation must be a string literal." );
+			        }
+		        } )
+		        .orElse( "Key.init" ) ),
+		    Map.entry( "enclosingBoxClass", transpiler.getProperty( "enclosingBoxClass" ) != null
+		        ? transpiler.getProperty( "enclosingBoxClass" ) + ".class"
+		        : "null" ),
+		    Map.entry( "enclosingClassName", enclosingClassNameExpr ),
+		    Map.entry( "innerClassNamesExpr", innerClassNamesExpr ),
+		    Map.entry( "innerBoxClassesRef", !localClassMap.isEmpty()
+		        ? className + ".innerBoxClasses"
+		        : "null" )
 		);
-		String							code		= PlaceholderHelper.resolve( CLASS_TEMPLATE, values );
+		String							code	= PlaceholderHelper.resolve( CLASS_TEMPLATE, values );
 		ParseResult<CompilationUnit>	result;
 
 		try {
@@ -610,25 +770,21 @@ public class BoxClassTransformer extends AbstractTransformer {
 			    "Error parsing class" + packageName + "." + className + ". The message received was:" + result.toString() + "\n" + code );
 		}
 
-		CompilationUnit		entryPoint				= result.getResult().get();
+		CompilationUnit				entryPoint				= result.getResult().get();
+		ClassOrInterfaceDeclaration	thisClass				= entryPoint.getClassByName( className ).orElseThrow();
 
-		MethodDeclaration	pseudoConstructorMethod	= entryPoint.findCompilationUnit().orElseThrow()
-		    .getClassByName( className ).orElseThrow()
-		    .getMethodsByName( "_pseudoConstructor" ).get( 0 );
+		MethodDeclaration			pseudoConstructorMethod	= thisClass.getMethodsByName( "_pseudoConstructor" ).get( 0 );
 
-		MethodDeclaration	staticInitializerMethod	= entryPoint.findCompilationUnit().orElseThrow()
-		    .getClassByName( className ).orElseThrow()
-		    .getMethodsByName( "staticInitializer" ).get( 0 );
+		MethodDeclaration			staticInitializerMethod	= thisClass.getMethodsByName( "staticInitializer" ).get( 0 );
 
-		FieldDeclaration	imports					= entryPoint.findCompilationUnit().orElseThrow()
-		    .getClassByName( className ).orElseThrow()
-		    .getFieldByName( "imports" ).orElseThrow();
+		FieldDeclaration			imports					= thisClass.getFieldByName( "imports" ).orElseThrow();
 
-		FieldDeclaration	keys					= entryPoint.findCompilationUnit().orElseThrow()
-		    .getClassByName( className ).orElseThrow()
-		    .getFieldByName( "keys" ).orElseThrow();
+		FieldDeclaration			keys					= thisClass.getFieldByName( "keys" ).orElseThrow();
 
-		Expression			annotationStruct		= transformAnnotations( boxClass.getAnnotations() );
+		MethodCallExpr				udfs					= ( MethodCallExpr ) thisClass.getFieldByName( "udfs" ).orElseThrow()
+		    .getVariable( 0 ).getInitializer().get();
+
+		Expression					annotationStruct		= transformAnnotations( boxClass.getAnnotations() );
 		result.getResult().orElseThrow().getType( 0 ).getFieldByName( "annotations" ).orElseThrow().getVariable( 0 ).setInitializer( annotationStruct );
 
 		/* Transform the documentation creating the initialization value */
@@ -703,6 +859,39 @@ public class BoxClassTransformer extends AbstractTransformer {
 			staticInitializerMethod.getBody().get().addStatement( it );
 		} );
 
+		// loop over UDF registrations, add the static method to the class, and the UDF instantiation to the static block that initializes the UDFs map
+		( ( JavaTranspiler ) transpiler ).getUDFInvokers().forEach( ( key, value ) -> {
+			udfs.addArgument( createKey( key.getName() ) );
+			udfs.addArgument( value.getSecond() );
+			thisClass.addMember( value.getFirst() );
+		} );
+
+		// Process lambda invokers - add static methods and build the lambdas list initializer
+		FieldDeclaration		lambdasField	= thisClass.getFieldByName( "lambdas" ).orElseThrow();
+		ArrayCreationExpr		lambdasArray	= new ArrayCreationExpr( new ClassOrInterfaceType( null, "Lambda" ) );
+		ArrayInitializerExpr	lambdasInit		= new ArrayInitializerExpr();
+		lambdasArray.setInitializer( lambdasInit );
+		( ( JavaTranspiler ) transpiler ).getLambdaInvokers().forEach( value -> {
+			lambdasInit.getValues().add( value.getSecond() );
+			thisClass.addMember( value.getFirst() );
+		} );
+		ObjectCreationExpr lambdasListExpr = new ObjectCreationExpr( null, new ClassOrInterfaceType( null, "ArrayList<>" ), new NodeList<>() );
+		lambdasListExpr.addArgument( new MethodCallExpr( new NameExpr( "Arrays" ), "asList", new NodeList<>( lambdasArray ) ) );
+		lambdasField.getVariable( 0 ).setInitializer( lambdasListExpr );
+
+		// Process closure invokers - add static methods and build the closures list initializer
+		FieldDeclaration		closuresField	= thisClass.getFieldByName( "closures" ).orElseThrow();
+		ArrayCreationExpr		closuresArray	= new ArrayCreationExpr( new ClassOrInterfaceType( null, "ClosureDefinition" ) );
+		ArrayInitializerExpr	closuresInit	= new ArrayInitializerExpr();
+		closuresArray.setInitializer( closuresInit );
+		( ( JavaTranspiler ) transpiler ).getClosureInvokers().forEach( value -> {
+			closuresInit.getValues().add( value.getSecond() );
+			thisClass.addMember( value.getFirst() );
+		} );
+		ObjectCreationExpr closuresListExpr = new ObjectCreationExpr( null, new ClassOrInterfaceType( null, "ArrayList<>" ), new NodeList<>() );
+		closuresListExpr.addArgument( new MethodCallExpr( new NameExpr( "Arrays" ), "asList", new NodeList<>( closuresArray ) ) );
+		closuresField.getVariable( 0 ).setInitializer( closuresListExpr );
+
 		// For import statements, we add an argument to the constructor of the static List of imports
 		MethodCallExpr imp = ( MethodCallExpr ) imports.getVariable( 0 ).getInitializer().orElseThrow();
 		imp.getArguments().addAll( transpiler.getJImports() );
@@ -726,17 +915,36 @@ public class BoxClassTransformer extends AbstractTransformer {
 
 		transpiler.popContextName();
 
-		return entryPoint;
-	}
+		// Embed inner classes as static nested classes
+		( ( JavaTranspiler ) transpiler ).getInnerClassDeclarations().forEach( innerClass -> {
+			thisClass.addMember( innerClass );
+		} );
 
-	private String generateCompileTimeMethods( BoxClass boxClass ) {
-		List<String> entries = boxClass.getDescendantsOfType( BoxFunctionDeclaration.class )
-		    .stream()
-		    // Filter out abstract methods as they do not have a class
-		    .filter( bfd -> bfd.getBody() != null )
-		    .map( func -> "Map.entry(" + this.createKey( func.getName() ).toString() + ", Func_" + func.getName() + ".class)" )
-		    .collect( java.util.stream.Collectors.toList() );
-		return "Map.ofEntries(" + entries.stream().collect( java.util.stream.Collectors.joining( ", " ) ) + ")";
+		// Generate static innerBoxClasses field and getInnerBoxClassesStatic() method for all classes
+		Map<String, String>	localClasses	= ( ( JavaTranspiler ) transpiler ).getLocalClasses();
+		// Build: Map.of( Key.of("Name1"), Name1.class, Key.of("Name2"), Name2.class, ... )
+		MethodCallExpr		mapOfCall		= new MethodCallExpr( new NameExpr( "Map" ), "of" );
+		for ( Map.Entry<String, String> entry : localClasses.entrySet() ) {
+			mapOfCall.addArgument( new MethodCallExpr( new NameExpr( "Key" ), "of", new NodeList<>(
+			    new com.github.javaparser.ast.expr.StringLiteralExpr( entry.getKey() ) ) ) );
+			mapOfCall.addArgument( new com.github.javaparser.ast.expr.ClassExpr( new ClassOrInterfaceType( null, entry.getValue() ) ) );
+		}
+		// Add: public static Map<Key, Class<?>> innerBoxClasses = Map.of(...);
+		FieldDeclaration field = thisClass.addField( "Map<Key, Class<?>>", "innerBoxClasses",
+		    com.github.javaparser.ast.Modifier.Keyword.PUBLIC, com.github.javaparser.ast.Modifier.Keyword.STATIC );
+		field.getVariable( 0 ).setInitializer( mapOfCall );
+		// Add: public Map<Key, Class<?>> getInnerBoxClasses() { return innerBoxClasses; }
+		MethodDeclaration getInnerBoxClassesMethod = thisClass.addMethod( "getInnerBoxClasses",
+		    com.github.javaparser.ast.Modifier.Keyword.PUBLIC );
+		getInnerBoxClassesMethod.setType( "Map<Key, Class<?>>" );
+		getInnerBoxClassesMethod.getBody().get().addStatement( new ReturnStmt( new NameExpr( "innerBoxClasses" ) ) );
+		// Add: public static Map<Key, Class<?>> getInnerBoxClassesStatic() { return innerBoxClasses; }
+		MethodDeclaration getInnerBoxClassesStaticMethod = thisClass.addMethod( "getInnerBoxClassesStatic",
+		    com.github.javaparser.ast.Modifier.Keyword.PUBLIC, com.github.javaparser.ast.Modifier.Keyword.STATIC );
+		getInnerBoxClassesStaticMethod.setType( "Map<Key, Class<?>>" );
+		getInnerBoxClassesStaticMethod.getBody().get().addStatement( new ReturnStmt( new NameExpr( "innerBoxClasses" ) ) );
+
+		return entryPoint;
 	}
 
 	/**
@@ -901,7 +1109,13 @@ public class BoxClassTransformer extends AbstractTransformer {
 				fqn = boxReturnType.getFqn();
 			}
 		}
-		String returnValue = returnType.equals( BoxType.Fqn ) ? fqn : returnType.getSymbol();
+		// Use sourceText to preserve original case (e.g., "boolean" not "Boolean") when available
+		String returnValue;
+		if ( boxReturnType != null && boxReturnType.getSourceText() != null && !boxReturnType.getSourceText().isEmpty() ) {
+			returnValue = boxReturnType.getSourceText().trim();
+		} else {
+			returnValue = returnType.equals( BoxType.Fqn ) ? fqn : returnType.getSymbol();
+		}
 		sb.append( returnValue );
 		sb.append( " " );
 		sb.append( func.getName() );
@@ -938,6 +1152,60 @@ public class BoxClassTransformer extends AbstractTransformer {
 		if ( !returnValue.equals( "void" ) ) {
 			sb.append( "    return (" );
 			sb.append( returnValue );
+			sb.append( ") result;\n" );
+		}
+		sb.append( "}\n" );
+		return sb.toString();
+	}
+
+	/**
+	 * Create a Java method stub from a resolved Java method signature.
+	 * Uses the exact types from the Java class hierarchy rather than guessing from the BoxLang UDF declaration.
+	 *
+	 * @param method the resolved Java method to create a stub for
+	 *
+	 * @return the Java method stub as a string
+	 */
+	private String createJavaMethodStubFromResolved( JavaMethodResolver.ResolvedMethod method ) {
+		StringBuilder	sb				= new StringBuilder();
+		String			returnTypeName	= JavaMethodResolver.toJavaSourceType( method.returnType() );
+		Class<?>[]		paramTypes		= method.parameterTypes();
+
+		sb.append( "public " );
+		sb.append( returnTypeName );
+		sb.append( " " );
+		sb.append( method.name() );
+		sb.append( "(" );
+
+		for ( int i = 0; i < paramTypes.length; i++ ) {
+			if ( i > 0 ) {
+				sb.append( ", " );
+			}
+			sb.append( JavaMethodResolver.toJavaSourceType( paramTypes[ i ] ) );
+			sb.append( " arg" );
+			sb.append( i );
+		}
+		sb.append( ") {\n" );
+
+		// Collect method args into an array of Objects
+		sb.append( "    Object[] ___args = new Object[] {" );
+		for ( int i = 0; i < paramTypes.length; i++ ) {
+			if ( i > 0 ) {
+				sb.append( ", " );
+			}
+			sb.append( "arg" );
+			sb.append( i );
+		}
+		sb.append( "};\n" );
+
+		sb.append( "    Object result = BoxClassSupport.javaMethodStub( this, Key.of( \"" );
+		sb.append( method.name() );
+		sb.append( "\" ), ___args );\n" );
+
+		// Return only if the method is not void
+		if ( !method.returnType().equals( void.class ) ) {
+			sb.append( "    return (" );
+			sb.append( returnTypeName );
 			sb.append( ") result;\n" );
 		}
 		sb.append( "}\n" );

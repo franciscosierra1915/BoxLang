@@ -19,6 +19,7 @@ import ortus.boxlang.compiler.ast.BoxStatement;
 public class MethodContextTracker {
 
 	private int							varCount			= 0;
+	private int							classLocatorSlot	= -1;
 	private int							unusedStackEntries	= 0;
 	private int							returnDepth			= 0;
 	private List<Integer>				contextStack		= new ArrayList<Integer>();
@@ -80,6 +81,16 @@ public class MethodContextTracker {
 
 	public void setStringLabel( String label, BoxNode target ) {
 		stringLabel.put( label, target );
+	}
+
+	public void inheritLoopControlState( MethodContextTracker parentTracker ) {
+		if ( parentTracker == null ) {
+			return;
+		}
+
+		this.nodeBreaks.putAll( parentTracker.nodeBreaks );
+		this.nodeContinues.putAll( parentTracker.nodeContinues );
+		this.stringLabel.putAll( parentTracker.stringLabel );
 	}
 
 	public BoxNode getStringLabel( String label ) {
@@ -195,6 +206,23 @@ public class MethodContextTracker {
 	public List<AbstractInsnNode> loadCurrentContext() {
 		return List.of(
 		    new VarInsnNode( Opcodes.ALOAD, contextStack.getLast() )
+		);
+	}
+
+	public void setClassLocatorSlot( int slot ) {
+		this.classLocatorSlot = slot;
+	}
+
+	public int getClassLocatorSlot() {
+		return this.classLocatorSlot;
+	}
+
+	public List<AbstractInsnNode> loadClassLocator() {
+		if ( this.classLocatorSlot < 0 ) {
+			throw new IllegalStateException( "ClassLocator slot has not been set" );
+		}
+		return List.of(
+		    new VarInsnNode( Opcodes.ALOAD, this.classLocatorSlot )
 		);
 	}
 }

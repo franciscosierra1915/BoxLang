@@ -30,6 +30,7 @@ import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
 import ortus.boxlang.runtime.scopes.IScope;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.scopes.VariablesScope;
+import ortus.boxlang.runtime.types.Query;
 
 public class JSONSerializeTest {
 
@@ -118,7 +119,7 @@ public class JSONSerializeTest {
 
 	@DisplayName( "It can serialize using the BoxLang DateTime methods" )
 	@Test
-	public void testCanSerializeDateTimeUsingMethods() {
+	public void s() {
 		// @formatter:off
 		instance.executeSource(
 		    """
@@ -129,7 +130,6 @@ public class JSONSerializeTest {
 					localDate: LocalDate.now(),
 					sqlDate: Date.valueOf( "2024-01-01" )
 				} )
-				println( result )
 		    """,
 		    context );
 		// @formatter:on
@@ -257,6 +257,100 @@ public class JSONSerializeTest {
 
 		// @formatter:on
 		assertThat( variables.getAsString( result ).replaceAll( "\\s", "" ) ).isEqualTo( expected.replaceAll( "\\s", "" ) );
+	}
+
+	@DisplayName( "It can serialize a query as array of structs with null values when queryNullToEmpty is enabled" )
+	@Test
+	public void testCanSerializeQueryArrayOfStructsWithNullValue() {
+		try {
+			Query.queryNullToEmpty = true;
+			// @formatter:off
+			instance.executeSource(
+			    """
+			         query = queryNew(
+					"col1,col2,col3",
+					"numeric,varchar,bit",
+					[
+						[1,null,true],
+						[2,"wood",false]
+					]
+				);
+				result = JSONSerialize( query, "struct" )
+			    """,
+			context );
+			// @formatter:on
+
+			Query query = variables.getAsQuery( Key.of( "query" ) );
+			assertThat( query.getData().get( 0 )[ 1 ] ).isNull();
+			assertThat( variables.getAsString( result ).replaceAll( "\\s", "" ) )
+			    .isEqualTo( "[{\"col1\":1,\"col2\":null,\"col3\":true},{\"col1\":2,\"col2\":\"wood\",\"col3\":false}]" );
+			assertThat( variables.getAsString( result ) ).doesNotContain( "\"\"" );
+		} finally {
+			Query.queryNullToEmpty = false;
+		}
+	}
+
+	@DisplayName( "It can serialize a query as row with null values when queryNullToEmpty is enabled" )
+	@Test
+	public void testCanSerializeQueryRowWithNullValue() {
+		try {
+			Query.queryNullToEmpty = true;
+			// @formatter:off
+			instance.executeSource(
+			    """
+			         query = queryNew(
+					"col1,col2,col3",
+					"numeric,varchar,bit",
+					[
+						[1,null,true],
+						[2,"wood",false]
+					]
+				);
+				result = JSONSerialize( query, "row" )
+			    """,
+			context );
+			// @formatter:on
+
+			Query query = variables.getAsQuery( Key.of( "query" ) );
+			assertThat( query.getData().get( 0 )[ 1 ] ).isNull();
+			assertThat( variables.getAsString( result ).replaceAll( "\\s", "" ) )
+			    .isEqualTo( "{\"columns\":[\"col1\",\"col2\",\"col3\"],\"data\":[[1,null,true],[2,\"wood\",false]]}" );
+			assertThat( variables.getAsString( result ) ).doesNotContain( "\"\"" );
+		} finally {
+			Query.queryNullToEmpty = false;
+		}
+	}
+
+	@DisplayName( "It can serialize a query as column with null values when queryNullToEmpty is enabled" )
+	@Test
+	public void testCanSerializeQueryColumnWithNullValue() {
+		try {
+			Query.queryNullToEmpty = true;
+			// @formatter:off
+			instance.executeSource(
+			    """
+			         query = queryNew(
+					"col1,col2,col3",
+					"numeric,varchar,bit",
+					[
+						[1,null,true],
+						[2,"wood",false]
+					]
+				);
+				result = JSONSerialize( query, "column" )
+			    """,
+			context );
+			// @formatter:on
+
+			Query query = variables.getAsQuery( Key.of( "query" ) );
+			assertThat( query.getData().get( 0 )[ 1 ] ).isNull();
+			assertThat( variables.getAsString( result ).replaceAll( "\\s", "" ) )
+			    .isEqualTo(
+			        "{\"rowCount\":2,\"columns\":[\"col1\",\"col2\",\"col3\"],\"data\":{\"col1\":[1,2],\"col2\":[null,\"wood\"],\"col3\":[true,false]}}" );
+			assertThat( variables.getAsString( result ) ).doesNotContain( "\"\"" );
+		} finally {
+			Query.queryNullToEmpty = false;
+		}
 	}
 
 	@DisplayName( "It can serialize a string Member" )
@@ -430,7 +524,6 @@ public class JSONSerializeTest {
 		// @formatter:on
 
 		var json = variables.getAsString( result );
-		System.out.println( json );
 		assertThat( json ).isNotEmpty();
 	}
 
@@ -442,7 +535,6 @@ public class JSONSerializeTest {
 		    """
 		    	test = new src.test.bx.NotSerializable()
 				result = jsonSerialize( test )
-				println( result )
 		    """,
 		context );
 		// @formatter:on
@@ -503,7 +595,6 @@ public class JSONSerializeTest {
 				foo.put( "bar", bar )
 
 				result = jsonSerialize( foo )
-				println( result )
 		    """,
 		context );
 		// @formatter:on
@@ -523,7 +614,6 @@ public class JSONSerializeTest {
 				foo.append( bar )
 
 				result = jsonSerialize( foo )
-				println( result )
 		    """,
 		context );
 		// @formatter:on
@@ -548,7 +638,6 @@ public class JSONSerializeTest {
 				foo.add( bar )
 
 				result = jsonSerialize( foo )
-				println( result )
 		    """,
 		context );
 		// @formatter:on
@@ -573,7 +662,6 @@ public class JSONSerializeTest {
 					"six" : true
 				}, pretty=true )
 
-				println( result )
 			""",
 		    context );
 		// @formatter:on
@@ -596,19 +684,18 @@ public class JSONSerializeTest {
 		    """
 				array1 = [javacast("double",0.0) ,javacast("double",0.30420544445599146)];
 
-				matrix = {   "test": 
+				matrix = {   "test":
 					[javacast("double[]", array1)]
 				}
 		    	result = jsonSerialize( data: matrix )
 
-				println( result )
 			""",
 		    context );
 		// @formatter:on
 
 		var json = variables.getAsString( result );
 		assertThat( json ).isNotEmpty();
-		assertThat( json ).isEqualTo( "{\"test\":[[0.0,0.30420544445599146]]}" );
+		assertThat( json ).isEqualTo( "{\"test\":[[0,0.30420544445599146]]}" );
 	}
 
 	@DisplayName( "It can serialize exception" )
@@ -623,7 +710,6 @@ public class JSONSerializeTest {
 					result = jsonSerialize( data: e )
 				}
 
-				println( result )
 			""",
 		    context );
 		// @formatter:on
@@ -639,7 +725,7 @@ public class JSONSerializeTest {
 		instance.executeSource(
 		    """
 				myQry = queryNew( "col", "varchar", [["brad"]] )
-				result = jsonSerialize( [ myQry ] );
+				result = jsonSerialize( [ myQry ], "row" );
 			""",
 		    context );
 		// @formatter:on
@@ -650,9 +736,27 @@ public class JSONSerializeTest {
 
 	}
 
-	@DisplayName( "It will serialize doubles without using scientific notation" )
+	@DisplayName( "It will serialize doubles" )
 	@Test
-	public void testWillSerializeDoublesWithoutScientificNotation() {
+	public void testWillSerializeDoubles() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				result = JSONserialize( {
+					"q": 5 castas Double
+				} );
+			""",
+		    context );
+		// @formatter:on
+
+		var json = variables.getAsString( result );
+		assertThat( json ).isNotEmpty();
+		assertThat( json ).isEqualTo( "{\"q\":5}" );
+	}
+
+	@DisplayName( "It will serialize BigDecimals without using scientific notation" )
+	@Test
+	public void testWillSerializeBigDecimalsWithoutScientificNotation() {
 		// @formatter:off
 		instance.executeSource(
 		    """
@@ -666,7 +770,144 @@ public class JSONSerializeTest {
 		var json = variables.getAsString( result );
 		assertThat( json ).isNotEmpty();
 		assertThat( json ).doesNotContain( "E" );
-		assertThat( json ).isEqualTo( "{\"q\":0.0000000}" );
+		assertThat( json ).isEqualTo( "{\"q\":0}" );
+	}
+
+	@DisplayName( "It will serialize stream" )
+	@Test
+	public void testWillSerializeStream() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+			data = {
+			myStream : [1,2,3].stream()
+			}
+
+			result = JSONSerialize( data );
+			""",
+		    context );
+		// @formatter:on
+
+		assertThat( variables.getAsString( result ) ).contains( "\"myStream\":{" );
+	}
+
+	@DisplayName( "It will serialize random java obects" )
+	@Test
+	public void testWillSerializeRandomJavaObjects() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				uri = createObject( "java", "java.net.URI" ).init( "/foo" );
+				result = JSONSerialize( { "uri" : uri } );
+			""",
+		    context );
+		// @formatter:on
+
+		assertThat( variables.getAsString( result ) ).contains( "\"RawPath\"" );
+		assertThat( variables.getAsString( result ) ).contains( "\"RawAuthority\"" );
+		assertThat( variables.getAsString( result ) ).contains( "\"Scheme\"" );
+		assertThat( variables.getAsString( result ) ).contains( "\"RawFragment\"" );
+		assertThat( variables.getAsString( result ) ).contains( "\"SchemeSpecificPart\"" );
+		assertThat( variables.getAsString( result ) ).contains( "\"/foo\"" );
+	}
+
+	@DisplayName( "It will serialize Java Instant" )
+	@Test
+	public void testWillSerializeJavaInstant() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				instant = createObject( "java", "java.time.Instant" ).EPOCH;
+				result = JSONSerialize( { "instant" : instant } );
+			//	println(result)
+			""",
+		    context );
+		// @formatter:on
+
+		assertThat( variables.getAsString( result ) ).contains( "1970-01-01T00:00:00Z" );
+	}
+
+	@DisplayName( "It will serialize Java Duration" )
+	@Test
+	public void testWillSerializeJavaDuration() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				duration = createObject( "java", "java.time.Duration" ).ofSeconds( 60 );
+				result = JSONSerialize( { "duration" : duration } );
+				duration2 = createObject( "java", "java.time.Duration" ).ofDays( 2 );
+				result2 = JSONSerialize( { "duration2" : duration2 } );
+			""",
+		    context );
+		// @formatter:on
+		assertThat( variables.getAsString( result ) ).contains( "0.0006944444444444444" );
+		assertThat( variables.getAsString( Key.of( "result2" ) ) ).contains( "2" );
+	}
+
+	@DisplayName( "It will serialize Java class" )
+	@Test
+	public void testWillSerializeJavaClass() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				result = JSONSerialize( "x".getClass() );
+				result = JSONSerialize( createObject("java","java.net.InetAddress") );
+				result = JSONSerialize( createObject("java","java.net.InetAddress").getLocalHost() );
+			""",
+		    context );
+		// @formatter:on
+		// Just assert it wasn't a stack overflow
+	}
+
+	@DisplayName( "It can serialize a Set as a JSON array" )
+	@Test
+	public void testCanSerializeSet() {
+		instance.executeSource(
+		    """
+		    s = setNew( type="linked", values=["a","b","c"] );
+		    result = JSONSerialize( s );
+		    """,
+		    context );
+		assertThat( variables.getAsString( result ) ).isEqualTo( "[\"a\",\"b\",\"c\"]" );
+	}
+
+	@DisplayName( "It can serialize a Set as a JSON array using a member method" )
+	@Test
+	public void testCanSerializeSetWithMemberMethod() {
+		instance.executeSource(
+		    """
+		    result = setNew( type="linked", values=["a","b","c"] ).toJSON()
+
+		    """,
+		    context );
+		assertThat( variables.getAsString( result ) ).isEqualTo( "[\"a\",\"b\",\"c\"]" );
+	}
+
+	@DisplayName( "It can serialize a Set nested in a struct" )
+	@Test
+	public void testCanSerializeSetNestedInStruct() {
+		instance.executeSource(
+		    """
+		    result = JSONSerialize( { "tags": setNew( type="linked", values=["java","boxlang"] ) } );
+		    """,
+		    context );
+		var json = variables.getAsString( result );
+		assertThat( json ).contains( "\"tags\":[\"java\",\"boxlang\"]" );
+	}
+
+	@DisplayName( "It serializes a java.util.UUID as a quoted JSON string" )
+	@Test
+	public void testSerializeUUID() {
+		// @formatter:off
+		instance.executeSource(
+		    """
+				uuid = createObject( "java", "java.util.UUID" ).randomUUID();
+				result = jsonSerialize( uuid );
+			""",
+		    context );
+		// @formatter:on
+		String json = variables.getAsString( result );
+		assertThat( json ).matches( "\"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\"" );
 	}
 
 }
